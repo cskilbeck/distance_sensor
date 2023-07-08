@@ -38,8 +38,6 @@ void TIM1_CC_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void ADC1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void DMA1_Channel3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void SPI1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 
 //////////////////////////////////////////////////////////////////////
@@ -64,6 +62,9 @@ volatile u32 distance_value = 0;
 volatile u8 char_received = 0;
 
 volatile u16 ticks = 0;
+
+u16 *spi_next_word = NULL;
+u16 *spi_end_addr = NULL;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -265,103 +266,43 @@ void spi_init(void)
     GPIO_Setup(GPIO_PORT_SPI_CLK, GPIO_PIN_SPI_CLK, GPIO_OUT_AF_PP_10MHZ);
     GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_OUT_AF_PP_10MHZ);
     GPIO_Setup(GPIO_PORT_SPI_MISO, GPIO_PIN_SPI_MISO, GPIO_IN_FLOATING);
-
-    //GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_OUT_AF_PP_10MHZ);
-    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_PULLUP_DOWN);
-    GPIO_SetPullDown(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
+    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_OUT_PP_10MHZ);
+    GPIO_Set(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
 
     SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
     SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
     SPI_InitStructure.SPI_DataSize = SPI_DataSize_16b;
     SPI_InitStructure.SPI_CPOL = SPI_CPOL_Low;
     SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;
-    SPI_InitStructure.SPI_NSS = SPI_NSS_Hard;
+    SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
     SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_8;
     SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
     SPI_InitStructure.SPI_CRCPolynomial = 7;
     SPI_Init(SPI1, &SPI_InitStructure);
-    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, ENABLE);
-    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx, ENABLE);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void dma_tx_init(DMA_Channel_TypeDef *DMA_CHx, u32 periph_addr, u32 mem_addr, u16 buf_size)
-{
-    DMA_InitTypeDef DMA_InitStructure = { 0 };
-    DMA_DeInit(DMA_CHx);
-    DMA_InitStructure.DMA_PeripheralBaseAddr = periph_addr;
-    DMA_InitStructure.DMA_MemoryBaseAddr = mem_addr;
-    DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralDST;
-    DMA_InitStructure.DMA_BufferSize = buf_size;
-    DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-    DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
-    DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;
-    DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
-    DMA_InitStructure.DMA_Priority = DMA_Priority_VeryHigh;
-    DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
-    DMA_Init(DMA_CHx, &DMA_InitStructure);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void dma_rx_init(DMA_Channel_TypeDef *DMA_CHx, u32 periph_addr, u32 mem_addr, u16 buf_size)
-{
-    DMA_InitTypeDef DMA_InitStructure = { 0 };
-    DMA_DeInit(DMA_CHx);
-    DMA_InitStructure.DMA_PeripheralBaseAddr = periph_addr;
-    DMA_InitStructure.DMA_MemoryBaseAddr = mem_addr;
-    DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;
-    DMA_InitStructure.DMA_BufferSize = buf_size;
-    DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-    DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
-    DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;
-    DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
-    DMA_InitStructure.DMA_Priority = DMA_Priority_High;
-    DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
-    DMA_Init(DMA_CHx, &DMA_InitStructure);
+    SPI_Cmd(SPI1, ENABLE);
+    NVIC_EnableIRQ(SPI1_IRQn);
 }
 
 //////////////////////////////////////////////////////////////////////
 
 void SPI1_IRQHandler(void)
 {
-    SPI_I2S_ClearITPendingBit(SPI1, SPI_I2S_IT_TXE);
-    if(spi_status == status_complete) {
-        GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
-        spi_status = status_idle;
-        SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, DISABLE);
+    SPI_I2S_ClearFlag(SPI1, SPI_I2S_FLAG_TXE);
+    if(spi_next_word < spi_end_addr) {
+        SPI_I2S_SendData(SPI1, *spi_next_word++);
     }
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void DMA1_Channel2_IRQHandler(void)
-{
-    DMA_ClearITPendingBit(DMA1_IT_TC2);
-    DMA_ClearFlag(DMA1_FLAG_TC2);
-    DMA_Cmd(DMA1_Channel2, DISABLE);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void DMA1_Channel3_IRQHandler(void)
-{
-    SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, ENABLE);
-    spi_status = status_complete;
-    DMA_ClearITPendingBit(DMA1_IT_TC3);
-    DMA_ClearFlag(DMA1_FLAG_TC3);
-    DMA_Cmd(DMA1_Channel3, DISABLE);
+    else {
+        SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, DISABLE);
+        spi_status = status_complete;
+        GPIO_Set(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
+        GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
+    }
 }
 
 //////////////////////////////////////////////////////////////////////
 
 int main(void)
 {
-    RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
-
     RCC->APB1PCENR |= RCC_APB1Periph_TIM2;
 
     RCC->APB2PCENR |= RCC_APB2Periph_GPIOD
@@ -395,38 +336,23 @@ int main(void)
     GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
     GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
 
-    dma_rx_init(DMA1_Channel2, (u32) &SPI1->DATAR, (u32) spi_rx_data, SPI_DATA_SIZE);
-    dma_tx_init(DMA1_Channel3, (u32) &SPI1->DATAR, (u32) spi_tx_data, SPI_DATA_SIZE);
-
-    DMA_ITConfig(DMA1_Channel2, DMA_IT_TC, ENABLE);
-    DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
-
-    NVIC_EnableIRQ(DMA1_Channel2_IRQn);
-    NVIC_EnableIRQ(DMA1_Channel3_IRQn);
-    NVIC_EnableIRQ(SPI1_IRQn);
-
     init_systick();
 
     u16 now = ticks;
-
-    SPI_Cmd(SPI1, ENABLE);
 
     while(1) {
 
         u16 elapsed = (s16) ticks - now;
 
         if(elapsed >= 1000) {
-            printf("%d\r\n", ticks);
+            //printf("%d\r\n", ticks);
             now = ticks;
             GPIO_Clear(GPIO_PORT_LED, GPIO_MASK_LED);
             spi_status = status_in_progress;
-            SPI_SSOutputCmd(SPI1, DISABLE);
-            DMA_SetCurrDataCounter(DMA1_Channel2, SPI_DATA_SIZE);
-            DMA_SetCurrDataCounter(DMA1_Channel3, SPI_DATA_SIZE);
-            DMA1_Channel2->MADDR = (u32)spi_rx_data;
-            DMA1_Channel3->MADDR = (u32)spi_tx_data;
-            DMA_Cmd(DMA1_Channel2, ENABLE);
-            DMA_Cmd(DMA1_Channel3, ENABLE);
+            spi_next_word = spi_tx_data;
+            spi_end_addr = spi_tx_data + SPI_DATA_SIZE;
+            GPIO_Clear(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
+            SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, ENABLE);
         }
 
         if(button.pressed) {
