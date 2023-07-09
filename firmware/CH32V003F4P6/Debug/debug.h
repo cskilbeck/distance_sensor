@@ -7,14 +7,15 @@
  *                      Printf , Delay functions.
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
- * Attention: This software (modified or not) and binary are used for 
+ * Attention: This software (modified or not) and binary are used for
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #ifndef __DEBUG_H
 #define __DEBUG_H
 
 #ifdef __cplusplus
- extern "C" {
+extern "C"
+{
 #endif
 
 #include <ch32v00x.h>
@@ -28,10 +29,12 @@
 #define DEBUG   DEBUG_UART1
 #endif
 
-void Delay_Init(void);
-void Delay_Us(uint32_t n);
-void Delay_Ms(uint32_t n);
-void USART_Printf_Init(uint32_t baudrate);
+    void Delay_Init(void);
+    void Delay_Us(uint32_t n);
+    void Delay_Ms(uint32_t n);
+    void USART_Printf_Init(uint32_t baudrate);
+
+    void *_sbrk(ptrdiff_t incr);
 
 #ifdef __cplusplus
 }

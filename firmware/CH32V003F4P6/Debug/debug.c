@@ -7,7 +7,7 @@
  *                      Printf , Delay functions.
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
- * Attention: This software (modified or not) and binary are used for 
+ * Attention: This software (modified or not) and binary are used for
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #include <debug.h>
@@ -118,7 +118,7 @@ void USART_Printf_Init(uint32_t baudrate)
  *
  * @return  size - Data length
  */
-__attribute__((used)) 
+__attribute__((used))
 int _write(int fd, char *buf, int size)
 {
     int i;
@@ -151,5 +151,11 @@ void *_sbrk(ptrdiff_t incr)
     return curbrk - incr;
 }
 
+void _fini()
+{
+}
 
+void _init()
+{
+}
 

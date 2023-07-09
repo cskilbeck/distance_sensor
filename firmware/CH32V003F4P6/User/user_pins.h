@@ -65,14 +65,14 @@
 #define GPIO_PORT_SPI_MISO GPIOC
 
 // GPIOD
-#define GPIO_PIN_SNS_TX 2
-#define GPIO_PIN_SNS_RX 3
+#define GPIO_PIN_SNS_RX 2
+#define GPIO_PIN_SNS_TX 3
 #define GPIO_PIN_VBAT_SNS_EN 4
 #define GPIO_PIN_RX 5
 #define GPIO_PIN_TX 6
 
-#define GPIO_MASK_SNS_TX GPIO_Pin_2
-#define GPIO_MASK_SNS_RX GPIO_Pin_3
+#define GPIO_MASK_SNS_RX GPIO_Pin_2
+#define GPIO_MASK_SNS_TX GPIO_Pin_3
 #define GPIO_MASK_VBAT_SNS_EN GPIO_Pin_4
 #define GPIO_MASK_RX GPIO_Pin_5
 #define GPIO_MASK_TX GPIO_Pin_6

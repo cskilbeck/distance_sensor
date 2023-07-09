@@ -10,6 +10,8 @@
 * microcontroller manufactured by Nanjing Qinheng Microelectronics.
 *******************************************************************************/
 #include <ch32v00x_it.h>
+#include "user_gpio.h"
+#include "user_pins.h"
 
 void NMI_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void HardFault_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -34,8 +36,13 @@ void NMI_Handler(void)
  */
 void HardFault_Handler(void)
 {
-  while (1)
-  {
-  }
+    RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
+    GPIO_Setup(GPIO_PORT_LED, GPIO_PIN_LED, GPIO_OUT_PP_2MHZ);
+    GPIO_Clear(GPIO_PORT_LED, GPIO_MASK_LED);
+    while (1) {
+        for(volatile int i=0; i<400000; ++i) {
+        }
+        GPIO_Toggle(GPIO_PORT_LED, GPIO_MASK_LED);
+    }
 }
 
