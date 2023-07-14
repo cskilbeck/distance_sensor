@@ -1,4 +1,12 @@
 //////////////////////////////////////////////////////////////////////
+//
+// SPI Slave mode
+// sleep/standby for N minutes
+//
+//
+//
+//
+//////////////////////////////////////////////////////////////////////
 
 #include "debug.h"
 #include "string.h"
@@ -11,7 +19,7 @@
 
 using byte = uint8_t;
 
-#define SPI_DATA_SIZE 14
+#define SPI_DATA_SIZE 32
 
 #define NUM_TIMER_READINGS 16
 
@@ -23,6 +31,19 @@ enum status_t
     status_in_progress,
     status_complete
 };
+
+//////////////////////////////////////////////////////////////////////
+// so max data you can send in one message is 10 bytes
+
+struct message_t
+{
+    u8 id;    // type of message
+    u8 length;    // how many bytes in the payload
+    u8 payload[SPI_DATA_SIZE - 4 - 2] __attribute__((aligned(1)));    // zero pad so crc makes sense
+    u32 crc;
+};
+
+static_assert(sizeof(message_t)==SPI_DATA_SIZE);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -48,22 +69,17 @@ struct button_t
 
 //////////////////////////////////////////////////////////////////////
 
-struct message_t
-{
-    u32 crc;
-    u16 data[SPI_DATA_SIZE];
-};
-
-//////////////////////////////////////////////////////////////////////
-
 extern "C"
 {
     void TIM1_CC_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
     void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
     void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
     void ADC1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
-    void SPI1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
+    void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
+    void DMA1_Channel3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
 }
+
+void spi_start();
 
 //////////////////////////////////////////////////////////////////////
 
@@ -73,16 +89,8 @@ volatile status_t distance_status = status_idle;
 
 volatile u32 ticks;
 
-u16 spi_tx_data[SPI_DATA_SIZE] = {
-0x0101, 0x0202, 0x0303, 0x0404, 0x0505, 0x0606, 0x1111, 0x1212, 0x1313, 0x1414, 0x1515, 0x1616, 0x1717, 0x1818
-};
-
-u16 spi_rx_data[SPI_DATA_SIZE];
-
-message_t spi_message;
-
-u16 *spi_next_word;
-u16 *spi_end_addr;
+u8 spi_tx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
+u8 spi_rx_data[SPI_DATA_SIZE] __attribute__ ((aligned(4)));
 
 u32 distance_readings[NUM_TIMER_READINGS];
 int num_distance_readings;
@@ -123,11 +131,11 @@ extern "C" void ADC1_IRQHandler(void)
 
 extern "C" void TIM1_CC_IRQHandler(void)
 {
-    if((TIM1->INTFR & TIM_IT_CC2) != RESET) {
+    if((TIM1->INTFR & TIM_IT_CC2) != 0) {
         distance_value = TIM1->CH2CVR;
         distance_status = status_complete;
     }
-    TIM1->INTFR = (uint16_t)~(TIM_IT_CC1 | TIM_IT_CC2);
+    TIM1->INTFR = ~(TIM_IT_CC1 | TIM_IT_CC2);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -139,16 +147,19 @@ extern "C" void USART1_IRQHandler(void)
 
 //////////////////////////////////////////////////////////////////////
 
-extern "C" void SPI1_IRQHandler(void)
+void DMA1_Channel2_IRQHandler(void)
 {
-    SPI_I2S_ClearFlag(SPI1, SPI_I2S_FLAG_TXE);
-    if(spi_next_word < spi_end_addr) {
-        SPI_I2S_SendData(SPI1, *spi_next_word++);
-    } else {
-        SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, DISABLE);
-        spi_status = status_complete;
-        GPIO_Set(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
-    }
+    DMA_ClearFlag(DMA1_FLAG_TC2);
+    DMA_Cmd(DMA1_Channel2, DISABLE);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void DMA1_Channel3_IRQHandler(void)
+{
+    DMA_ClearFlag(DMA1_FLAG_TC3);
+    spi_start();
+    spi_status = status_complete;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -184,7 +195,7 @@ void init_uart1(void)
 
 u32 stopwatch_t::elapsed() const
 {
-    return static_cast<s32>(ticks) - now;
+    return static_cast<u32>(static_cast<s32>(ticks) - now);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -370,44 +381,142 @@ void init_systick()
 void init_spi(void)
 {
     RCC->APB2PCENR |= RCC_APB2Periph_GPIOC | RCC_APB2Periph_SPI1 | RCC_APB2Periph_AFIO;
+    RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
 
-    GPIO_Setup(GPIO_PORT_SPI_CLK, GPIO_PIN_SPI_CLK, GPIO_OUT_AF_PP_10MHZ);
-    GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_OUT_AF_PP_10MHZ);
-    GPIO_Setup(GPIO_PORT_SPI_MISO, GPIO_PIN_SPI_MISO, GPIO_IN_FLOATING);
-    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_OUT_PP_10MHZ);
-    GPIO_Set(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
+    GPIO_Setup(GPIO_PORT_SPI_CLK, GPIO_PIN_SPI_CLK, GPIO_IN_FLOATING);
+    GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_IN_FLOATING);
+    GPIO_Setup(GPIO_PORT_SPI_MISO, GPIO_PIN_SPI_MISO, GPIO_OUT_AF_PP_10MHZ);
+    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_FLOATING);
+
+    // only init when SPI is idle
+    while(GPIO_Get(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS) == 0) {
+    }
+
+    memset(spi_tx_data, 0, sizeof(spi_tx_data));
+
+    SPI_Cmd(SPI1, DISABLE);
 
     {
         SPI_InitTypeDef SPI_InitStructure;
         SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
-        SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
-        SPI_InitStructure.SPI_DataSize = SPI_DataSize_16b;
-        SPI_InitStructure.SPI_CPOL = SPI_CPOL_Low;
+        SPI_InitStructure.SPI_Mode = SPI_Mode_Slave;
+        SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
+        SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
         SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;
-        SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_8;
+        SPI_InitStructure.SPI_NSS = SPI_NSS_Hard;
+        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_2;
         SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
         SPI_InitStructure.SPI_CRCPolynomial = 7;
         SPI_Init(SPI1, &SPI_InitStructure);
     }
 
+    {
+        DMA_InitTypeDef dma_rx;
+        dma_rx.DMA_PeripheralBaseAddr = (u32)(&SPI1->DATAR);
+        dma_rx.DMA_MemoryBaseAddr = (u32)spi_rx_data;
+        dma_rx.DMA_DIR = DMA_DIR_PeripheralSRC;
+        dma_rx.DMA_BufferSize = SPI_DATA_SIZE;
+        dma_rx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+        dma_rx.DMA_MemoryInc = DMA_MemoryInc_Enable;
+        dma_rx.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+        dma_rx.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+        dma_rx.DMA_Mode = DMA_Mode_Normal;
+        dma_rx.DMA_Priority = DMA_Priority_Medium;
+        dma_rx.DMA_M2M = DMA_M2M_Disable;
+        DMA_Init(DMA1_Channel2, &dma_rx);
+    }
+
+    {
+        DMA_InitTypeDef dma_tx;
+        dma_tx.DMA_PeripheralBaseAddr = (u32)(&SPI1->DATAR);
+        dma_tx.DMA_MemoryBaseAddr = (u32)spi_tx_data;
+        dma_tx.DMA_DIR = DMA_DIR_PeripheralDST;
+        dma_tx.DMA_BufferSize = SPI_DATA_SIZE * 2;
+        dma_tx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+        dma_tx.DMA_MemoryInc = DMA_MemoryInc_Enable;
+        dma_tx.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+        dma_tx.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+        dma_tx.DMA_Mode = DMA_Mode_Normal;
+        dma_tx.DMA_Priority = DMA_Priority_High;
+        dma_tx.DMA_M2M = DMA_M2M_Disable;
+        DMA_Init(DMA1_Channel3, &dma_tx);
+    }
+
+    NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+    NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+
+    DMA_ITConfig(DMA1_Channel2, DMA_IT_TC, ENABLE);
+    DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
+
+    DMA_Cmd(DMA1_Channel2, ENABLE);
+    DMA_Cmd(DMA1_Channel3, ENABLE);
+
+    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, ENABLE);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void spi_start()
+{
+    SPI_Cmd(SPI1, DISABLE);
+    DMA_Cmd(DMA1_Channel2, DISABLE);
+    DMA_Cmd(DMA1_Channel3, DISABLE);
+    DMA1_Channel2->MADDR = (u32)spi_rx_data;
+    DMA1_Channel3->MADDR = (u32)spi_tx_data;
+    DMA_SetCurrDataCounter(DMA1_Channel2, SPI_DATA_SIZE);
+    DMA_SetCurrDataCounter(DMA1_Channel3, SPI_DATA_SIZE * 2);
+    DMA_Cmd(DMA1_Channel2, ENABLE);
+    DMA_Cmd(DMA1_Channel3, ENABLE);
     SPI_Cmd(SPI1, ENABLE);
-    NVIC_EnableIRQ(SPI1_IRQn);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void spi_send(u8 id, u8 length, void *data)
+{
+    while(spi_status != status_idle) {
+        __NOP();
+    }
+
+    message_t *m = reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);
+    m->id = id;
+    m->length = length;
+    memcpy(m->payload, data, length);
+    intptr_t extra = length < sizeof(m->payload);
+    if(extra != 0) {
+        memset(m->payload + length, 0, extra);
+    }
+    m->crc = crc32(spi_tx_data, sizeof(message_t) - sizeof(u32));
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void init_led()
+{
+    RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
+
+    GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
+    GPIO_Setup(GPIO_PORT_LED, GPIO_PIN_LED, GPIO_OUT_PP_2MHZ);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void init_power()
+{
+    RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
+
+    GPIO_Setup(GPIO_PORT_EN_3V3, GPIO_PIN_EN_3V3, GPIO_OUT_PP_2MHZ);
+    GPIO_Setup(GPIO_PORT_LVL_OE, GPIO_PIN_LVL_OE, GPIO_OUT_PP_2MHZ);
 }
 
 //////////////////////////////////////////////////////////////////////
 
 extern "C" int user_main(void)
 {
-    RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
-    GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
-    GPIO_Setup(GPIO_PORT_LED, GPIO_PIN_LED, GPIO_OUT_PP_2MHZ);
-
-    GPIO_Setup(GPIO_PORT_EN_3V3, GPIO_PIN_EN_3V3, GPIO_OUT_PP_2MHZ);
-
-    GPIO_Setup(GPIO_PORT_LVL_OE, GPIO_PIN_LVL_OE, GPIO_OUT_PP_2MHZ);
-
+    init_led();
+    init_power();
     init_uart1();
     init_button();
     init_timer2();
@@ -416,37 +525,42 @@ extern "C" int user_main(void)
     init_spi();
     init_systick();
 
-    printf("SystemClk:%d\r\n", SystemCoreClock);
+    printf("SysClk:%d\r\n", SystemCoreClock);
 
-    memcpy(spi_message.data, spi_tx_data, sizeof(spi_message.data));
-
-    spi_message.crc = crc32(reinterpret_cast<u8 const *>(spi_message.data), sizeof(spi_message.data));
-
-    printf("CRC:%08x\r\n", spi_message.crc);
-
-    //GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
-    //GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
+    GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
+    GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
 
     vbat_timer.reset();
     spi_timer.reset();
     distance_timer.reset();
 
+    struct bobbins
+    {
+        u8 foo[4];
+    }__attribute__((aligned(2)));
+
+    bobbins bobby;
+
+    bobby.foo[0] = 0xDE;
+    bobby.foo[1] = 0xAD;
+    bobby.foo[2] = 0xBE;
+    bobby.foo[3] = 0xEF;
+
+    spi_send(1, sizeof(bobby), &bobby);
+
+    spi_start();
+
     while(true) {
 
-        if(spi_timer.elapsed() >= 1000 && spi_status == status_idle) {
-            spi_timer.reset();
-            spi_status = status_in_progress;
-            spi_next_word = spi_tx_data;
-            spi_end_addr = spi_tx_data + SPI_DATA_SIZE;
-            GPIO_Clear(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
-            SPI_I2S_ITConfig(SPI1, SPI_I2S_IT_TXE, ENABLE);
+        if(spi_status == status_complete) {
+            printf("GOT %08x\r\n", spi_rx_data[0]);
+            GPIO_Toggle(GPIO_PORT_LED, GPIO_MASK_LED);
+            spi_status = status_idle;
         }
 
         if(distance_timer.elapsed() > 133 && distance_status == status_idle) {
             distance_timer.reset();
-            if(distance_status == status_idle) {
-                TIM_Cmd(TIM2, ENABLE);
-            }
+            TIM_Cmd(TIM2, ENABLE);
         }
 
         if(vbat_timer.elapsed() > 300 && vbat_status == status_idle) {
@@ -457,18 +571,16 @@ extern "C" int user_main(void)
         }
 
         if(button.pressed) {
-            GPIO_Toggle(GPIO_PORT_LED, GPIO_MASK_LED);
             button.pressed = 0;
         }
 
         if(char_received != 0) {
-            GPIO_Toggle(GPIO_PORT_LED, GPIO_MASK_LED);
             char_received = 0;
         }
 
         if(vbat_status == status_complete) {
             vbat_status = status_idle;
-            printf("%d\n", vbat_reading);
+            //printf("%d\n", vbat_reading);
         }
 
         if(distance_status == status_complete) {
