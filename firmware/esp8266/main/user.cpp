@@ -20,42 +20,10 @@
 
 static char const *TAG = "user";
 
-//////////////////////////////////////////////////////////////////////
-
-uint16 crc16(message_body_t const *m)
-{
-    uint16 crc = 0xffff;
-    byte const *p = reinterpret_cast<byte const *>(m);
-    byte const *e = p + sizeof(message_body_t);
-    for(; p < e; ++p) {
-        uint16 x = (crc >> 8) ^ *p;
-        x ^= x >> 4;
-        crc = (crc << 8) ^ (x << 12) ^ (x << 5) ^ x;
-    }
-    return crc;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-bool is_valid_message(message_t *m)
-{
-    return m->msg.signature == 'DC' && crc16(&m->msg) == m->crc;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void init_message(message_t *message, uint64_t timestamp, uint32_t options)
-{
-    message->msg.timestamp = timestamp;
-    message->msg.options = options;
-    message->msg.signature = 'DC';
-    message->crc = crc16(&message->msg);
-}
-
-//////////////////////////////////////////////////////////////////////
-
 uint32_t mosi_buffer[8];
 uint32_t miso_buffer[8];
+
+//////////////////////////////////////////////////////////////////////
 
 #define HSPI_CMD (SPI_CMD(1))
 #define HSPI_USER (SPI_USER(1))
@@ -70,60 +38,14 @@ uint32_t miso_buffer[8];
 #define SPI_INTR_REGISTER(a, b) _xt_isr_attach(ETS_SPI_INUM, (a), (b))
 
 #define HSPI_IS_BUSY ((READ_PERI_REG(HSPI_CMD) & SPI_USR) != 0)
-// SPI[host]->clock.clk_equ_sysclk = false;
-// SPI[host]->clock.clkdiv_pre = 0;
-// SPI[host]->clock.clkcnt_n = *clk_div - 1;
-// // In the master mode clkcnt_h = floor((clkcnt_n+1)/2-1). In the slave mode it must be 0
-// SPI[host]->clock.clkcnt_h = *clk_div / 2 - 1;
-// // In the master mode clkcnt_l = clkcnt_n. In the slave mode it must be 0
-// SPI[host]->clock.clkcnt_l = *clk_div - 1;
 
 #define SPI_MASTER_CLOCK_VAL(c) \
     (((c - 1) & SPI_CLKCNT_N) << SPI_CLKCNT_N_S) | (((((c + 1) >> 1) - 1) & SPI_CLKCNT_H) << SPI_CLKCNT_H_S) | (((c - 1) & SPI_CLKCNT_L) << SPI_CLKCNT_L_S)
 
-#define SPI_TEST_MODE 2
+//////////////////////////////////////////////////////////////////////
 
 void init_hspi()
 {
-#if SPI_TEST_MODE == 0 && 0
-
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12);
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, FUNC_GPIO13);
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_GPIO14);
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, FUNC_GPIO15);
-
-    gpio_config_t cfg;
-    cfg.mode = GPIO_MODE_INPUT;
-    cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-    cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    cfg.intr_type = GPIO_INTR_DISABLE;
-    cfg.pin_bit_mask = GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14 | GPIO_Pin_15;
-    gpio_config(&cfg);
-
-#elif SPI_TEST_MODE == 1
-
-    spi_config_t cfg;
-    cfg.interface.cpol = SPI_CPOL_HIGH;
-    cfg.interface.cpha = SPI_CPHA_LOW;
-    cfg.interface.bit_tx_order = SPI_BIT_ORDER_LSB_FIRST;    // Actually MSB first
-    cfg.interface.bit_rx_order = SPI_BIT_ORDER_LSB_FIRST;    // Actually MSB first
-    cfg.interface.byte_tx_order = SPI_BYTE_ORDER_LSB_FIRST;
-    cfg.interface.byte_rx_order = SPI_BYTE_ORDER_LSB_FIRST;
-    cfg.interface.mosi_en = 1;
-    cfg.interface.miso_en = 1;
-    cfg.interface.cs_en = 1;
-    cfg.intr_enable.read_buffer = 0;
-    cfg.intr_enable.write_buffer = 0;
-    cfg.intr_enable.read_status = 0;
-    cfg.intr_enable.write_status = 0;
-    cfg.intr_enable.trans_done = 0;
-    cfg.event_cb = NULL;
-    cfg.mode = SPI_MASTER_MODE;
-    cfg.clk_div = SPI_16MHz_DIV;
-    spi_init(HSPI_HOST, &cfg);
-
-#elif SPI_TEST_MODE == 2
-
     CLEAR_PERI_REG_MASK(HSPI_CMD, SPI_USR);
 
     CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX, SPI1_CLK_EQU_SYS_CLK);
@@ -141,8 +63,6 @@ void init_hspi()
     SET_PERI_REG_MASK(HSPI_USER, SPI_RD_BYTE_ORDER | SPI_CK_OUT_EDGE | SPI_USR_MISO_HIGHPART | SPI_USR_MOSI | SPI_USR_MISO);
 
     CLEAR_PERI_REG_MASK(HSPI_USER, SPI_CK_I_EDGE | SPI_USR_ADDR | SPI_USR_COMMAND | SPI_USR_DUMMY);
-
-#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -153,19 +73,6 @@ void hspi_transaction()
     for(uint8_t i = 0; i < sizeof(mosi_buffer); ++i) {
         ((uint8_t *)mosi_buffer)[i] = 0xAA;
     }
-
-#if SPI_TEST_MODE == 1
-
-    spi_trans_t trans;
-    memset(&trans, 0, sizeof(trans));
-    trans.mosi = mosi_buffer;
-    trans.miso = miso_buffer;
-    trans.bits.mosi = 128;
-    trans.bits.miso = 128;
-
-    spi_trans(HSPI_HOST, &trans);
-
-#elif SPI_TEST_MODE == 2
 
     while(HSPI_IS_BUSY) {
     }
@@ -179,13 +86,9 @@ void hspi_transaction()
     }
 
     memcpy(miso_buffer, HSPI_W(8), sizeof(miso_buffer));
-
-#endif
 }
 
 //////////////////////////////////////////////////////////////////////
-
-message_t message;
 
 extern "C" void user_main()
 {
