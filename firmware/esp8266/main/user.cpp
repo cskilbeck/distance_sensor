@@ -15,6 +15,7 @@
 #include "esp_log.h"
 
 #include "user.h"
+#include "crc.h"
 
 //////////////////////////////////////////////////////////////////////
 
@@ -31,7 +32,9 @@ uint32_t miso_buffer[8];
 #define HSPI_USER2 (SPI_USER2(1))
 #define HSPI_CLOCK (SPI_CLOCK(1))
 #define HSPI_PIN (SPI_PIN(1))
-#define HSPI_W(x) (reinterpret_cast<uint32_t *>(SPI_W0(1)) + (x))
+
+#define HSPI_W0 ((uint32_t *)(SPI_W0(1)))
+#define HSPI_W8 ((uint32_t *)(SPI_W8(1)))
 
 #define SPI_INTR_ENABLE() _xt_isr_unmask(1 << ETS_SPI_INUM)
 #define SPI_INTR_DISABLE() _xt_isr_mask(1 << ETS_SPI_INUM)
@@ -67,25 +70,35 @@ void init_hspi()
 
 //////////////////////////////////////////////////////////////////////
 
-void hspi_transaction()
+void hspi_transaction(uint32_t const *send, uint32_t *recv)
 {
-    memset(mosi_buffer, 0, sizeof(mosi_buffer));
-    for(uint8_t i = 0; i < sizeof(mosi_buffer); ++i) {
-        ((uint8_t *)mosi_buffer)[i] = 0xAA;
-    }
-
     while(HSPI_IS_BUSY) {
     }
 
+    HSPI_W0[0] = send[0];
+    HSPI_W0[1] = send[1];
+    HSPI_W0[2] = send[2];
+    HSPI_W0[3] = send[3];
+    HSPI_W0[4] = send[4];
+    HSPI_W0[5] = send[5];
+    HSPI_W0[6] = send[6];
+    HSPI_W0[7] = send[7];
+
     WRITE_PERI_REG(HSPI_USER1, (255 << SPI_USR_MOSI_BITLEN_S) | (255 << SPI_USR_MISO_BITLEN_S));
-    memcpy(HSPI_W(0), mosi_buffer, sizeof(mosi_buffer));
 
     SET_PERI_REG_MASK(HSPI_CMD, SPI_USR);
 
     while(HSPI_IS_BUSY) {
     }
 
-    memcpy(miso_buffer, HSPI_W(8), sizeof(miso_buffer));
+    recv[0] = HSPI_W8[0];
+    recv[1] = HSPI_W8[1];
+    recv[2] = HSPI_W8[2];
+    recv[3] = HSPI_W8[3];
+    recv[4] = HSPI_W8[4];
+    recv[5] = HSPI_W8[5];
+    recv[6] = HSPI_W8[6];
+    recv[7] = HSPI_W8[7];
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -103,11 +116,20 @@ extern "C" void user_main()
 
     init_hspi();
 
-    int x = 0;
+    uint32_t x = calc_crc32((uint8_t const *)mosi_buffer, 32);
+    (void)x;
+
     while(true) {
+
         vTaskDelay(250 / portTICK_PERIOD_MS);
-        hspi_transaction();
+
+        for(uint8_t i = 0; i < sizeof(mosi_buffer); ++i) {
+            ((uint8_t *)mosi_buffer)[i] = ~i;
+        }
+
+        hspi_transaction(mosi_buffer, miso_buffer);
+
         uint32_t *p = (uint32_t *)miso_buffer;
-        ESP_LOGI(TAG, "Got %4d,0x%08x%08x%08x%08x", x++, p[0], p[1], p[2], p[3]);
+        ESP_LOGI(TAG, "Got 0x%08x%08x%08x%08x", p[0], p[1], p[2], p[3]);
     }
 }

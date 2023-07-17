@@ -30,6 +30,18 @@
 		<nature>org.eclipse.cdt.core.ccnature</nature>
 		<nature>org.eclipse.cdt.codan.core.codanNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>User/crc.cpp</name>
+			<type>1</type>
+			<location>U:/dev/distance_sensor/firmware/esp8266/main/crc.cpp</location>
+		</link>
+		<link>
+			<name>User/crc.h</name>
+			<type>1</type>
+			<location>U:/dev/distance_sensor/firmware/esp8266/main/crc.h</location>
+		</link>
+	</linkedResources>
 	<filteredResources>
 		<filter>
 			<id>1595986042669</id>

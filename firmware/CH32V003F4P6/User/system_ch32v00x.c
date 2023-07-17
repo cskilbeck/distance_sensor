@@ -30,7 +30,7 @@
 #elif defined SYSCLK_FREQ_24MHZ_HSI
   uint32_t SystemCoreClock         = SYSCLK_FREQ_24MHZ_HSI;        /* System Clock Frequency (Core Clock) */
 #elif defined SYSCLK_FREQ_48MHZ_HSI
-  uint32_t SystemCoreClock         = SYSCLK_FREQ_48MHZ_HSI;        /* System Clock Frequency (Core Clock) */
+uint32_t SystemCoreClock = SYSCLK_FREQ_48MHZ_HSI; /* System Clock Frequency (Core Clock) */
 #elif defined SYSCLK_FREQ_8MHz_HSE
   uint32_t SystemCoreClock         = SYSCLK_FREQ_8MHz_HSE;         /* System Clock Frequency (Core Clock) */
 #elif defined SYSCLK_FREQ_24MHz_HSE

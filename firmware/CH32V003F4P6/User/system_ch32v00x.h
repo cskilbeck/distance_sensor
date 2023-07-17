@@ -6,7 +6,7 @@
  * Description        : CH32V00x Device Peripheral Access Layer System Header File.
 *********************************************************************************
 * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
-* Attention: This software (modified or not) and binary are used for 
+* Attention: This software (modified or not) and binary are used for
 * microcontroller manufactured by Nanjing Qinheng Microelectronics.
 *******************************************************************************/
 #ifndef __SYSTEM_CH32V00x_H
@@ -14,11 +14,11 @@
 
 #ifdef __cplusplus
  extern "C" {
-#endif 
+#endif
 
-extern uint32_t SystemCoreClock;          /* System Clock Frequency (Core Clock) */
+    extern uint32_t SystemCoreClock; /* System Clock Frequency (Core Clock) */
 
-/* System_Exported_Functions */  
+/* System_Exported_Functions */
 extern void SystemInit(void);
 extern void SystemCoreClockUpdate(void);
 

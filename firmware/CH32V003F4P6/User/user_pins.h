@@ -45,6 +45,8 @@
 #define GPIO_PREG_VBAT_SNS RCC_APB2Periph_GPIOA
 #define GPIO_PREG_BUTTON RCC_APB2Periph_GPIOA
 
+#define GPIO_MASK_ALL 0xffff
+
 // GPIOC
 #define GPIO_PIN_LED 0
 #define GPIO_PIN_SPI_CS 1

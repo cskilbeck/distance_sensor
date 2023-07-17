@@ -1,19 +1,25 @@
 //////////////////////////////////////////////////////////////////////
 //
-// SPI Slave mode
-// sleep/standby for N minutes
-//
+// x    SPI Slave mode
+// x    CH32 Sleep/standby for N minutes
+// x    Measure power consumption
+// !    Common message stuff between ESP12 and CH32
+//      ESP12 Tasks (WiFi, SPI etc)
+//      Server/Alexa
 //
 //
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <stdint.h>
 #include "debug.h"
 #include "string.h"
 #include "memory.h"
 #include "user_gpio.h"
 #include "user_pins.h"
 #include "crc.h"
+
+#define SYSTICK_CNTIF 0x1
 
 //////////////////////////////////////////////////////////////////////
 
@@ -33,13 +39,13 @@ enum status_t
 };
 
 //////////////////////////////////////////////////////////////////////
-// so max data you can send in one message is 10 bytes
+// so max data you can send in one message is 32 - 4 - 2 = 26 bytes
 
 struct message_t
 {
-    u8 id;    // type of message
-    u8 length;    // how many bytes in the payload
-    u8 payload[SPI_DATA_SIZE - 4 - 2] __attribute__((aligned(1)));    // zero pad so crc makes sense
+    u8 id;                                                              // type of message
+    u8 length;                                                          // how many bytes in the payload
+    u8 payload[SPI_DATA_SIZE - 4 - 2] __attribute__((aligned(1)));      // zero pad so crc makes sense
     u32 crc;
 };
 
@@ -60,9 +66,9 @@ struct stopwatch_t
 struct button_t
 {
     u16 history;
-    u16 pressed :1;
-    u16 released :1;
-    u16 held :1;
+    volatile u16 pressed :1;
+    volatile u16 released :1;
+    volatile u16 held :1;
 
     void update(int state);
 };
@@ -90,7 +96,7 @@ volatile status_t distance_status = status_idle;
 volatile u32 ticks;
 
 u8 spi_tx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
-u8 spi_rx_data[SPI_DATA_SIZE] __attribute__ ((aligned(4)));
+u8 spi_rx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
 
 u32 distance_readings[NUM_TIMER_READINGS];
 int num_distance_readings;
@@ -109,10 +115,89 @@ stopwatch_t distance_timer;
 stopwatch_t vbat_timer;
 
 //////////////////////////////////////////////////////////////////////
+// sleep for N minutes
+//
+// 61440 / 128000 = 0.48 secs/tick
+// 63 ticks per loop = 30.24 seconds
+// 30.24 * 2 = 60.48 seconds per minute, so.... near enough
+// e.g. if you ask for an hour, you'll get approx 29 extra seconds
+// but the 128kHz LSI clock is wobbly anyway so whevs
+
+#define PFIC_SCTLR_SLEEP_DEEP 0x04
+#define PFIC_SCTLR_WFITOWFE 0x08
+#define PFIC_SCTLR_SETEVENT 0x20
+
+#define PWR_AWUEN 0x02
+
+void sleep_for_minutes_and_reset(u32 minutes)
+{
+    __disable_irq();
+
+    // switch off the ADC
+    ADC1->CTLR2 = 0;
+
+    // switch off all clocks except what we need
+    RCC->AHBPCENR = RCC_AHBPeriph_SRAM;
+    RCC->APB1PCENR = RCC_APB1Periph_PWR;
+    RCC->APB2PCENR = RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC | RCC_APB2Periph_GPIOD | RCC_APB2Periph_AFIO;
+
+    // disable all AFIO remap
+    AFIO->PCFR1 = 0;
+
+    // then set all GPIOs input pull down except LED (C0 = pull up)
+    GPIOA->CFGLR = 0x88888888;
+    GPIOC->CFGLR = 0x88888888;
+    GPIOD->CFGLR = 0x88888888;
+    GPIOA->OUTDR = 0;
+    GPIOC->OUTDR = 0 | GPIO_MASK_LED;
+    GPIOD->OUTDR = 0;
+
+    // set clock to 8MHz HSI, switch off the PLL
+    RCC->CFGR0 |= RCC_HPRE_DIV3;
+    RCC->CTLR &= ~RCC_PLLON;
+
+    // switch off SysTick
+    SysTick->CTLR = 0;
+
+    // configure EXTI_Line9 event falling trigger
+    EXTI->INTENR = 0;
+    EXTI->EVENR = EXTI_Line9;
+    EXTI->RTENR = 0;
+    EXTI->FTENR = EXTI_Line9;
+
+    // switch on 128kHz LSI
+    RCC->RSTSCKR |= RCC_LSION;
+
+    // wait for it to stabilize
+    while((RCC->RSTSCKR & RCC_LSIRDY) == 0) {
+    }
+
+    // setup auto wakeup every ~30seconds
+    PWR->AWUPSC = PWR_AWU_Prescaler_61440;
+    PWR->AWUCSR |= PWR_AWUEN;
+    PWR->AWUWR = 4;
+
+    // prepare standby mode
+    PWR->CTLR = PWR_CTLR_PDDS;
+
+    // go into standby N times for 30 * 2 seconds
+    u32 t = NVIC->SCTLR | PFIC_SCTLR_SLEEP_DEEP | PFIC_SCTLR_WFITOWFE | PFIC_SCTLR_SETEVENT;
+
+    for(u32 i = minutes * 2; i != 0; --i) {
+        NVIC->SCTLR = t;
+        asm volatile ("wfi");
+        asm volatile ("wfi");
+    }
+
+    // and reboot
+    NVIC_SystemReset();
+}
+
+//////////////////////////////////////////////////////////////////////
 
 extern "C" void SysTick_Handler(void)
 {
-    SysTick->SR &= ~(1 << 0);
+    SysTick->SR &= ~SYSTICK_CNTIF;
     button.update(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON));
     ticks += 1;
 }
@@ -150,7 +235,6 @@ extern "C" void USART1_IRQHandler(void)
 void DMA1_Channel2_IRQHandler(void)
 {
     DMA_ClearFlag(DMA1_FLAG_TC2);
-    DMA_Cmd(DMA1_Channel2, DISABLE);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -368,7 +452,7 @@ void init_adc(void)
 
 void init_systick()
 {
-    SysTick->CTLR = 0xF;
+    SysTick->CTLR = 0;
     SysTick->SR &= ~(1 << 0);
     SysTick->CMP = (SystemCoreClock / 1000) - 1;
     SysTick->CNT = 0;
@@ -415,7 +499,7 @@ void init_spi(void)
         dma_rx.DMA_PeripheralBaseAddr = (u32)(&SPI1->DATAR);
         dma_rx.DMA_MemoryBaseAddr = (u32)spi_rx_data;
         dma_rx.DMA_DIR = DMA_DIR_PeripheralSRC;
-        dma_rx.DMA_BufferSize = SPI_DATA_SIZE;
+        dma_rx.DMA_BufferSize = SPI_DATA_SIZE * 2;
         dma_rx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
         dma_rx.DMA_MemoryInc = DMA_MemoryInc_Enable;
         dma_rx.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
@@ -458,35 +542,45 @@ void init_spi(void)
 
 void spi_start()
 {
-    SPI_Cmd(SPI1, DISABLE);
-    DMA_Cmd(DMA1_Channel2, DISABLE);
-    DMA_Cmd(DMA1_Channel3, DISABLE);
+    SPI1->CTLR1 &= ~SPI_CTLR1_SPE;
+    DMA1_Channel2->CFGR &= ~DMA_CFGR1_EN;
+    DMA1_Channel3->CFGR &= ~DMA_CFGR1_EN;
     DMA1_Channel2->MADDR = (u32)spi_rx_data;
     DMA1_Channel3->MADDR = (u32)spi_tx_data;
-    DMA_SetCurrDataCounter(DMA1_Channel2, SPI_DATA_SIZE);
-    DMA_SetCurrDataCounter(DMA1_Channel3, SPI_DATA_SIZE * 2);
-    DMA_Cmd(DMA1_Channel2, ENABLE);
-    DMA_Cmd(DMA1_Channel3, ENABLE);
-    SPI_Cmd(SPI1, ENABLE);
+    DMA1_Channel2->CNTR = SPI_DATA_SIZE * 2;
+    DMA1_Channel3->CNTR = SPI_DATA_SIZE * 2;
+    DMA1_Channel2->CFGR |= DMA_CFGR1_EN;
+    DMA1_Channel3->CFGR |= DMA_CFGR1_EN;
+    SPI1->CTLR1 |= SPI_CTLR1_SPE;
+}
+
+//////////////////////////////////////////////////////////////////////
+// we're the slave so just setup the buffer which will get picked
+// up next time the master (ESP12) does a transaction
+//
+// Only call this just after a transaction!
+
+void spi_send(u8 id, u8 length, void const *data)
+{
+    message_t *m = reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);    // 1st half of buffer is ignored by ESP12
+    m->id = id;
+    m->length = length;
+    for(int x = 0; x < length; ++x) {
+        m->payload[x] = ((u8*)data)[x];
+    }
+    for(int x = length; x < sizeof(m->payload); ++x) {
+        m->payload[x] = 0;
+    }
+    m->crc = calc_crc32(spi_tx_data, sizeof(message_t) - sizeof(u32));
 }
 
 //////////////////////////////////////////////////////////////////////
 
-void spi_send(u8 id, u8 length, void *data)
+template<typename T> void spi_sender(u8 id, T const &msg)
 {
-    while(spi_status != status_idle) {
-        __NOP();
-    }
+    static_assert(sizeof(T) < sizeof(message_t::payload));
 
-    message_t *m = reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);
-    m->id = id;
-    m->length = length;
-    memcpy(m->payload, data, length);
-    intptr_t extra = length < sizeof(m->payload);
-    if(extra != 0) {
-        memset(m->payload + length, 0, extra);
-    }
-    m->crc = crc32(spi_tx_data, sizeof(message_t) - sizeof(u32));
+    spi_send(id, sizeof(T), &msg);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -537,7 +631,7 @@ extern "C" int user_main(void)
     struct bobbins
     {
         u8 foo[4];
-    }__attribute__((aligned(2)));
+    };
 
     bobbins bobby;
 
@@ -546,15 +640,16 @@ extern "C" int user_main(void)
     bobby.foo[2] = 0xBE;
     bobby.foo[3] = 0xEF;
 
-    spi_send(1, sizeof(bobby), &bobby);
+    spi_sender(1, bobby);
 
     spi_start();
+
+    u32 x = 0;
 
     while(true) {
 
         if(spi_status == status_complete) {
-            printf("GOT %08x\r\n", spi_rx_data[0]);
-            GPIO_Toggle(GPIO_PORT_LED, GPIO_MASK_LED);
+            printf("GOT %5d,%08x\r\n", x++, ((u32 *)spi_rx_data)[0]);
             spi_status = status_idle;
         }
 
@@ -563,7 +658,7 @@ extern "C" int user_main(void)
             TIM_Cmd(TIM2, ENABLE);
         }
 
-        if(vbat_timer.elapsed() > 300 && vbat_status == status_idle) {
+        if(vbat_timer.elapsed() > 3000 && vbat_status == status_idle) {
             vbat_timer.reset();
             GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
             vbat_status = status_in_progress;
@@ -572,6 +667,11 @@ extern "C" int user_main(void)
 
         if(button.pressed) {
             button.pressed = 0;
+            printf("Sleep\r\n");
+            u32 now = ticks;
+            while(((s32)ticks - now) < 500) {
+            }
+            sleep_for_minutes_and_reset(3);
         }
 
         if(char_received != 0) {
@@ -580,7 +680,7 @@ extern "C" int user_main(void)
 
         if(vbat_status == status_complete) {
             vbat_status = status_idle;
-            //printf("%d\n", vbat_reading);
+            printf("%d\n", vbat_reading);
         }
 
         if(distance_status == status_complete) {
@@ -598,8 +698,5 @@ extern "C" int user_main(void)
                 printf("%d (%d)\r\n", distance_value, cur_average);
             }
         }
-
-        //PFIC->SCTLR &= ~((1<<3) | (1 << 1));    // WFI mode (not WFE), clear SLEEPONEXIT
-        //asm volatile ("wfi");
     }
 }
