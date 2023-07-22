@@ -1,3 +1,10 @@
 idf_component_register(
-    SRCS "main.c" "user.cpp" "crc.cpp"
-    INCLUDE_DIRS ".")
+    SRCS
+        "main.cpp"
+        "crc.cpp"
+        "util.cpp"
+        "websocket.cpp"
+        "wifi.cpp"
+        "spi.cpp"
+    INCLUDE_DIRS
+        ".")

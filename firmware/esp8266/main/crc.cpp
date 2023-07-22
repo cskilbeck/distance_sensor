@@ -1,5 +1,10 @@
+//////////////////////////////////////////////////////////////////////
+
 #include <stdint.h>
+#include <memory.h>
 #include "crc.h"
+
+//////////////////////////////////////////////////////////////////////
 
 namespace
 {
@@ -29,10 +34,20 @@ namespace
     };
 }
 
+//////////////////////////////////////////////////////////////////////
+
 uint32_t calc_crc32(uint8_t const *buf, uint32_t len, uint32_t crc)
 {
     while(len--) {
         crc = (crc << 8) ^ table[((crc >> 24) & 0xff) ^ *buf++];
     }
     return crc;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+bool check_crc32(message_t const *msg)
+{
+    uint32_t crc = calc_crc32(reinterpret_cast<uint8_t const *>(msg), sizeof(message_body_t));
+    return crc == msg->crc;
 }

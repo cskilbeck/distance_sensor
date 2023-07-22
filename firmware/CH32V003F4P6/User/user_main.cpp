@@ -1,11 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
+// !    Common message stuff between ESP12 and CH32
+// !    ESP12 Tasks (x WiFi, SPI etc)
+//      ESP WebSockets
+//      Server/Database
+//      Alexa notification
+//      Email notification
+//      Status/history web page
 // x    SPI Slave mode
 // x    CH32 Sleep/standby for N minutes
-// x    Measure power consumption
-// !    Common message stuff between ESP12 and CH32
-//      ESP12 Tasks (WiFi, SPI etc)
-//      Server/Alexa
+// x    Button wakeup
+// !    Measure power consumption
 //
 //
 //
@@ -22,14 +27,17 @@
 #define SYSTICK_CNTIF 0x1
 
 //////////////////////////////////////////////////////////////////////
+// main MCU state
 
-using byte = uint8_t;
-
-#define SPI_DATA_SIZE 32
-
-#define NUM_TIMER_READINGS 16
+enum state_t
+{
+    state_boot = 0,
+    state_reading,
+    state_esp,
+};
 
 //////////////////////////////////////////////////////////////////////
+// status of a system (spi, vbat adc etc)
 
 enum status_t
 {
@@ -39,17 +47,14 @@ enum status_t
 };
 
 //////////////////////////////////////////////////////////////////////
-// so max data you can send in one message is 32 - 4 - 2 = 26 bytes
+// what readings have been got so far
 
-struct message_t
+enum readings_t
 {
-    u8 id;                                                              // type of message
-    u8 length;                                                          // how many bytes in the payload
-    u8 payload[SPI_DATA_SIZE - 4 - 2] __attribute__((aligned(1)));      // zero pad so crc makes sense
-    u32 crc;
+    reading_vbat = 1,
+    reading_distance = 2,
+    reading_all = 3
 };
-
-static_assert(sizeof(message_t)==SPI_DATA_SIZE);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -66,9 +71,16 @@ struct stopwatch_t
 struct button_t
 {
     u16 history;
-    volatile u16 pressed :1;
-    volatile u16 released :1;
-    volatile u16 held :1;
+    union
+    {
+        struct
+        {
+            volatile u16 pressed :1;
+            volatile u16 released :1;
+            volatile u16 held :1;
+        };
+        u16 flags;
+    };
 
     void update(int state);
 };
@@ -89,6 +101,9 @@ void spi_start();
 
 //////////////////////////////////////////////////////////////////////
 
+state_t state = state_boot;
+u32 state_start_ticks;
+
 volatile status_t vbat_status = status_idle;
 volatile status_t spi_status = status_idle;
 volatile status_t distance_status = status_idle;
@@ -98,21 +113,48 @@ volatile u32 ticks;
 u8 spi_tx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
 u8 spi_rx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
 
-u32 distance_readings[NUM_TIMER_READINGS];
 int num_distance_readings;
-int cur_distance_reading;
-u32 cur_distance_total;
 volatile u32 distance_value;
 
 button_t button;
 
-u32 vbat_reading;
+volatile u16 vbat_reading;
 
 volatile u8 char_received;
+
+u32 got_readings = 0;
 
 stopwatch_t spi_timer;
 stopwatch_t distance_timer;
 stopwatch_t vbat_timer;
+
+int standby_boot = 0;
+
+//////////////////////////////////////////////////////////////////////
+
+void delay_ms(int ms)
+{
+    stopwatch_t t;
+    t.reset();
+    while(t.elapsed() < ms) {
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void set_state(state_t new_state)
+{
+    printf("set_state(%d)\n", new_state);
+    state_start_ticks = ticks;
+    state = new_state;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+u32 state_elapsed_ticks()
+{
+    return (s32)ticks - state_start_ticks;
+}
 
 //////////////////////////////////////////////////////////////////////
 // sleep for N minutes
@@ -123,13 +165,14 @@ stopwatch_t vbat_timer;
 // e.g. if you ask for an hour, you'll get approx 29 extra seconds
 // but the 128kHz LSI clock is wobbly anyway so whevs
 
-#define PFIC_SCTLR_SLEEP_DEEP 0x04
+#define PFIC_SCTLR_SLEEPDEEP 0x04
 #define PFIC_SCTLR_WFITOWFE 0x08
+#define PFIC_SCTLR_SEVONPEND 0x08
 #define PFIC_SCTLR_SETEVENT 0x20
 
 #define PWR_AWUEN 0x02
 
-void sleep_for_minutes_and_reset(u32 minutes)
+void sleep_for_minutes(u32 minutes)
 {
     __disable_irq();
 
@@ -144,12 +187,12 @@ void sleep_for_minutes_and_reset(u32 minutes)
     // disable all AFIO remap
     AFIO->PCFR1 = 0;
 
-    // then set all GPIOs input pull down except LED (C0 = pull up)
+    // then set all GPIOs input pull down except LED (C0 = pull up) and BUTTON (A2 = pullup)
     GPIOA->CFGLR = 0x88888888;
     GPIOC->CFGLR = 0x88888888;
     GPIOD->CFGLR = 0x88888888;
-    GPIOA->OUTDR = 0;
-    GPIOC->OUTDR = 0 | GPIO_MASK_LED;
+    GPIOA->OUTDR = GPIO_MASK_BUTTON;
+    GPIOC->OUTDR = GPIO_MASK_LED;
     GPIOD->OUTDR = 0;
 
     // set clock to 8MHz HSI, switch off the PLL
@@ -159,11 +202,14 @@ void sleep_for_minutes_and_reset(u32 minutes)
     // switch off SysTick
     SysTick->CTLR = 0;
 
-    // configure EXTI_Line9 event falling trigger
+    // EXTI line 2 on port A (A2... right?)
+    AFIO->EXTICR = GPIO_PortSourceGPIOA << GPIO_PIN_BUTTON;
+
+    // configure EXTI_Line9 (auto wakeup) and EXTI_Line1 (button) event falling triggers
     EXTI->INTENR = 0;
-    EXTI->EVENR = EXTI_Line9;
+    EXTI->EVENR = EXTI_Line9 | EXTI_Line2;
     EXTI->RTENR = 0;
-    EXTI->FTENR = EXTI_Line9;
+    EXTI->FTENR = EXTI_Line9 | EXTI_Line2;
 
     // switch on 128kHz LSI
     RCC->RSTSCKR |= RCC_LSION;
@@ -175,22 +221,52 @@ void sleep_for_minutes_and_reset(u32 minutes)
     // setup auto wakeup every ~30seconds
     PWR->AWUPSC = PWR_AWU_Prescaler_61440;
     PWR->AWUCSR |= PWR_AWUEN;
-    PWR->AWUWR = 4;
+    PWR->AWUWR = 63;
 
     // prepare standby mode
     PWR->CTLR = PWR_CTLR_PDDS;
 
     // go into standby N times for 30 * 2 seconds
-    u32 t = NVIC->SCTLR | PFIC_SCTLR_SLEEP_DEEP | PFIC_SCTLR_WFITOWFE | PFIC_SCTLR_SETEVENT;
+    u32 t = NVIC->SCTLR | PFIC_SCTLR_SLEEPDEEP | PFIC_SCTLR_WFITOWFE | PFIC_SCTLR_SEVONPEND;
 
     for(u32 i = minutes * 2; i != 0; --i) {
         NVIC->SCTLR = t;
         asm volatile ("wfi");
         asm volatile ("wfi");
+        if(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON) == 0) {
+            break;
+        }
     }
 
-    // and reboot
-    NVIC_SystemReset();
+    // disable sleep/standby stuff
+    EXTI->INTENR = 0;
+    EXTI->EVENR = 0;
+    EXTI->RTENR = 0;
+    EXTI->FTENR = 0;
+    RCC->RSTSCKR &= ~RCC_LSION;
+    PWR->AWUCSR &= ~PWR_AWUEN;
+    PWR->CTLR &= ~PWR_CTLR_PDDS;
+
+    // reinit System Clock
+    SystemInit();
+
+    __enable_irq();
+
+    standby_boot += 1;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+constexpr message_t *outbound_message()
+{
+    return reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+template<typename T> constexpr T *outbound_payload()
+{
+    return reinterpret_cast<T *>(&outbound_message()->body.payload);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -198,7 +274,7 @@ void sleep_for_minutes_and_reset(u32 minutes)
 extern "C" void SysTick_Handler(void)
 {
     SysTick->SR &= ~SYSTICK_CNTIF;
-    button.update(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON));
+    button.update(!GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON));
     ticks += 1;
 }
 
@@ -277,6 +353,15 @@ void init_uart1(void)
 
 //////////////////////////////////////////////////////////////////////
 
+void flush_printf()
+{
+    // wait for transfer empty and transfer complete
+    while((USART1->STATR & (USART_STATR_TC | USART_STATR_TXE)) != (USART_STATR_TC | USART_STATR_TXE)) {
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+
 u32 stopwatch_t::elapsed() const
 {
     return static_cast<u32>(static_cast<s32>(ticks) - now);
@@ -298,10 +383,8 @@ void init_button()
     GPIO_Setup(GPIO_PORT_BUTTON, GPIO_PIN_BUTTON, GPIO_IN_PULLUP_DOWN);
     GPIO_SetPullup(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON);
 
-    button.history = 0xffff;
-    button.held = 0;
-    button.released = 0;
-    button.pressed = 0;
+    button.history = 0;
+    button.flags = 0;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -311,10 +394,10 @@ void button_t::update(int state)
     u16 h = history;
     h = (h << 1) | state;
     history = h;
-    held = !state;
-    if(h == 0xfffe) {
+    held = state;
+    if(h == 0x0001) {
         pressed = 1;
-    } else if(h == 0x0001) {
+    } else if(h == 0xfffe) {
         released = 1;
     }
 }
@@ -415,7 +498,7 @@ void init_adc(void)
 
     RCC_ADCCLKConfig(RCC_PCLK2_Div8);
 
-    GPIO_Setup(GPIO_PORT_VBAT_SNS, GPIO_PIN_VBAT_SNS, GPIO_IN_AIN);
+    GPIO_Setup(GPIO_PORT_VBAT_SNS, GPIO_PIN_VBAT_SNS, GPIO_IN_ANALOG);
     GPIO_Setup(GPIO_PORT_VBAT_SNS_EN, GPIO_PIN_VBAT_SNS_EN, GPIO_OUT_PP_2MHZ);
 
     {
@@ -458,6 +541,7 @@ void init_systick()
     SysTick->CNT = 0;
     SysTick->CTLR = 0xF;
     NVIC_EnableIRQ(SysTicK_IRQn);
+    ticks = 0;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -555,35 +639,6 @@ void spi_start()
 }
 
 //////////////////////////////////////////////////////////////////////
-// we're the slave so just setup the buffer which will get picked
-// up next time the master (ESP12) does a transaction
-//
-// Only call this just after a transaction!
-
-void spi_send(u8 id, u8 length, void const *data)
-{
-    message_t *m = reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);    // 1st half of buffer is ignored by ESP12
-    m->id = id;
-    m->length = length;
-    for(int x = 0; x < length; ++x) {
-        m->payload[x] = ((u8*)data)[x];
-    }
-    for(int x = length; x < sizeof(m->payload); ++x) {
-        m->payload[x] = 0;
-    }
-    m->crc = calc_crc32(spi_tx_data, sizeof(message_t) - sizeof(u32));
-}
-
-//////////////////////////////////////////////////////////////////////
-
-template<typename T> void spi_sender(u8 id, T const &msg)
-{
-    static_assert(sizeof(T) < sizeof(message_t::payload));
-
-    spi_send(id, sizeof(T), &msg);
-}
-
-//////////////////////////////////////////////////////////////////////
 
 void init_led()
 {
@@ -605,10 +660,9 @@ void init_power()
 
 //////////////////////////////////////////////////////////////////////
 
-extern "C" int user_main(void)
+void init_peripherals()
 {
-    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
-
+    // setup all the things
     init_led();
     init_power();
     init_uart1();
@@ -619,84 +673,152 @@ extern "C" int user_main(void)
     init_spi();
     init_systick();
 
-    printf("SysClk:%d\r\n", SystemCoreClock);
-
-    GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
-    GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
-
     vbat_timer.reset();
     spi_timer.reset();
     distance_timer.reset();
 
-    struct bobbins
-    {
-        u8 foo[4];
-    };
+    // switch on VBAT_SNS
+    GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
 
-    bobbins bobby;
+    // switch on ESP12
+    GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
 
-    bobby.foo[0] = 0xDE;
-    bobby.foo[1] = 0xAD;
-    bobby.foo[2] = 0xBE;
-    bobby.foo[3] = 0xEF;
+    // switch on the level shifter
+    GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
 
-    spi_sender(1, bobby);
+    printf("\n\nSysClk:%d (boot %d)\n", SystemCoreClock, standby_boot);
+}
 
-    spi_start();
+//////////////////////////////////////////////////////////////////////
 
-    u32 x = 0;
+extern "C" int user_main(void)
+{
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
+
+    init_peripherals();
 
     while(true) {
 
-        if(spi_status == status_complete) {
-            printf("GOT %5d,%08x\r\n", x++, ((u32 *)spi_rx_data)[0]);
-            spi_status = status_idle;
-        }
+        switch(state)
+        {
+            ////////////////////////////////////////
 
-        if(distance_timer.elapsed() > 133 && distance_status == status_idle) {
-            distance_timer.reset();
-            TIM_Cmd(TIM2, ENABLE);
-        }
+            case state_boot:
+            {
+                GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (ticks & 0x7f) < 90);
 
-        if(vbat_timer.elapsed() > 3000 && vbat_status == status_idle) {
-            vbat_timer.reset();
-            GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
-            vbat_status = status_in_progress;
-            ADC_SoftwareStartConvCmd(ADC1, ENABLE);
-        }
+                if(state_elapsed_ticks() > 450 && !button.held) {
 
-        if(button.pressed) {
-            button.pressed = 0;
-            printf("Sleep\r\n");
-            u32 now = ticks;
-            while(((s32)ticks - now) < 500) {
+                    // kick off vbat read
+                    vbat_status = status_in_progress;
+                    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+
+                    // and distance reading
+                    num_distance_readings = 0;
+                    distance_timer.reset();
+                    distance_status = status_idle;
+                    got_readings = 0;
+                    button.released = 0;
+                    button.pressed = 0;
+                    set_state(state_reading);
+                }
             }
-            sleep_for_minutes_and_reset(3);
+            break;
+
+            ////////////////////////////////////////
+
+            case state_reading:
+            {
+                // if we got a VBAT reading
+                if(vbat_status == status_complete) {
+
+                    // stuff it into the SPI packet
+                    ch32_reading_payload_t *p = outbound_payload<ch32_reading_payload_t>();
+                    p->vbat = vbat_reading;
+                    printf("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
+                    vbat_status = status_idle;
+                    got_readings |= reading_vbat;
+                }
+
+                // if we're ready to kick off another distance reading
+                if(distance_status == status_idle && num_distance_readings < NUM_DISTANCE_READINGS && distance_timer.elapsed() > 10) {
+                    distance_status = status_in_progress;
+                    TIM_Cmd(TIM2, ENABLE);
+                }
+
+                // got a distance reading?
+                if(distance_status == status_complete) {
+
+                    // stuff it into the SPI packet
+                    ch32_reading_payload_t *p = outbound_payload<ch32_reading_payload_t>();
+                    p->distance[num_distance_readings] = distance_value;
+                    printf("DISTANCE[%d] = %d [0x%04x]\n", num_distance_readings, distance_value, distance_value);
+
+                    // setup delay before next reading
+                    distance_timer.reset();
+
+                    distance_status = status_idle;
+                    num_distance_readings += 1;
+
+                    // got enough distance readings?
+                    if(num_distance_readings == NUM_DISTANCE_READINGS) {
+
+                        // finalize the SPI packet
+                        init_message<ch32_reading_payload_t>(outbound_message());
+                        printf("CRC: %08x\n", outbound_message()->crc);
+                        got_readings |= reading_distance;
+                    }
+                }
+
+                // got VBAT and all distance readings?
+                if(got_readings == reading_all) {
+
+                    // start listening on SPI
+                    spi_start();
+                    set_state(state_esp);
+                }
+
+                // timeout on the readings... what to do?
+                if(state_elapsed_ticks() > 3000) {
+                    printf("Where's the readings?\n");
+                    NVIC_SystemReset();
+                }
+            }
+            break;
+
+            ////////////////////////////////////////
+
+            case state_esp:
+            {
+                // SPI transaction completed
+                if(spi_status == status_complete) {
+                    spi_status = status_idle;
+
+                    bool ok = check_crc32((message_t const *)spi_rx_data);
+                    if(state_elapsed_ticks() < 100000) {
+                        printf("SPI (%d) ", ok);
+                        for(int i=0; i<SPI_DATA_SIZE; ++i) {
+                            printf("%02x", spi_rx_data[i]);
+                        }
+                        printf("\n");
+                    }
+                }
+
+                // @DEBUG button release puts it to sleep
+
+                if(button.released) {
+                    printf("Sleeping...\n");
+                    flush_printf();
+                    sleep_for_minutes(180);
+                    init_peripherals();
+                    set_state(state_boot);
+                }
+            }
+            break;
         }
 
         if(char_received != 0) {
             char_received = 0;
-        }
-
-        if(vbat_status == status_complete) {
-            vbat_status = status_idle;
-            printf("%d\n", vbat_reading);
-        }
-
-        if(distance_status == status_complete) {
-            distance_status = status_idle;
-            if(distance_value < 500) {
-                u32 cur_average = 0;
-                cur_distance_total -= distance_readings[cur_distance_reading];
-                cur_distance_total += distance_value;
-                distance_readings[cur_distance_reading] = distance_value;
-                cur_distance_reading = ++cur_distance_reading % NUM_TIMER_READINGS;
-                num_distance_readings += 1;
-                if(num_distance_readings >= NUM_TIMER_READINGS) {
-                    cur_average = cur_distance_total / NUM_TIMER_READINGS;
-                }
-                printf("%d (%d)\r\n", distance_value, cur_average);
-            }
         }
     }
 }
