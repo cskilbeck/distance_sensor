@@ -28,17 +28,16 @@
 #include "util.h"
 #include "types.h"
 #include "crc.h"
-
-//////////////////////////////////////////////////////////////////////
-
-#define SUPPRESS_DEPRECATED _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
-#define SUPPRESS_POP _Pragma("GCC diagnostic pop")
+#include "wifi.h"
 
 //////////////////////////////////////////////////////////////////////
 
 static char const *TAG = "wifi";
 
 //////////////////////////////////////////////////////////////////////
+
+wifi_callback on_wifi_connected;
+wifi_callback on_wifi_disconnected;
 
 EventGroupHandle_t s_wifi_event_group;
 
@@ -91,6 +90,9 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
         case WIFI_EVENT_STA_DISCONNECTED:
             esp_wifi_connect();
             xEventGroupClearBits(s_wifi_event_group, CONNECTED_BIT);
+            if(on_wifi_disconnected != null) {
+                on_wifi_disconnected();
+            }
             break;
         }
     }
@@ -101,6 +103,9 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
 
         case IP_EVENT_STA_GOT_IP:
             xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
+            if(on_wifi_connected != null) {
+                on_wifi_connected();
+            }
             break;
         }
     }
@@ -110,15 +115,15 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
         switch(event_id) {
 
         case SC_EVENT_SCAN_DONE:
-            ESP_LOGI(TAG, "Scan done");
+            ESP_LOGI(TAG, "SC_EVENT_SCAN_DONE");
             break;
 
         case SC_EVENT_FOUND_CHANNEL:
-            ESP_LOGI(TAG, "Found channel");
+            ESP_LOGI(TAG, "SC_EVENT_FOUND_CHANNEL");
             break;
 
         case SC_EVENT_GOT_SSID_PSWD: {
-            ESP_LOGI(TAG, "Got SSID and password");
+            ESP_LOGI(TAG, "SC_EVENT_GOT_SSID_PSWD");
 
             wifi_config_t wifi_config;
             uint8_t ssid[33] = { 0 };
@@ -139,8 +144,8 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
             memcpy(ssid, evt->ssid, sizeof(evt->ssid));
             memcpy(password, evt->password, sizeof(evt->password));
 
-            ESP_LOGI(TAG, "SSID:%s", ssid);
-            ESP_LOGI(TAG, "PASSWORD:%s", password);
+            // ESP_LOGI(TAG, "SSID:%s", ssid);
+            // ESP_LOGI(TAG, "PASSWORD:%s", password);
 
             if(evt->type == SC_TYPE_ESPTOUCH_V2) {
                 ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
@@ -158,6 +163,7 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
         } break;
 
         case SC_EVENT_SEND_ACK_DONE:
+            ESP_LOGI(TAG, "SC_EVENT_SEND_ACK_DONE");
             xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
             break;
         }
@@ -168,6 +174,8 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, voi
 
 void initialise_wifi()
 {
+    ESP_LOGI(TAG, "initialise_wifi");
+
     tcpip_adapter_init();
     s_wifi_event_group = xEventGroupCreate();
 
@@ -183,6 +191,9 @@ void initialise_wifi()
     ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    ESP_LOGI(TAG, "here we go...");
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
     bool auto_connect;
@@ -190,6 +201,8 @@ void initialise_wifi()
     SUPPRESS_DEPRECATED
     esp_wifi_get_auto_connect(&auto_connect);
     SUPPRESS_POP
+
+    ESP_LOGI(TAG, "Auto connect: %d", auto_connect);
 
     if(auto_connect) {
         esp_wifi_connect();

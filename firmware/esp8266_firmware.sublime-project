@@ -8,7 +8,10 @@
 			"path": "esp8266",
 		},
 		{
-			"path": "U:\\dev\\wifi-christmas-tree-lights\\esp8266\\controller_esp8266\\main"
+			"path": "U:\\dev\\wifi-christmas-tree-lights\\esp8266\\controller_esp8266\\main",
+		},
+		{
+			"path": "U:\\dev\\distance_sensor\\server"
 		},
 	],
 }

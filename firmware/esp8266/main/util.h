@@ -2,6 +2,11 @@
 
 //////////////////////////////////////////////////////////////////////
 
+#define SUPPRESS_DEPRECATED _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define SUPPRESS_POP _Pragma("GCC diagnostic pop")
+
+//////////////////////////////////////////////////////////////////////
+
 template <typename T, size_t N> constexpr size_t countof(T const (&)[N]) noexcept
 {
     return N;

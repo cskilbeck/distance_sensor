@@ -1,18 +1,20 @@
 //////////////////////////////////////////////////////////////////////
 //
-// !    Common message stuff between ESP12 and CH32
-// !    ESP12 Tasks (x WiFi, SPI etc)
-//      ESP WebSockets
-//      Server/Database
-//      Alexa notification
-//      Email notification
-//      Status/history web page
+// x    Common message stuff between ESP12 and CH32
+// x    ESP12 Tasks (x WiFi, SPI etc)
+// x    ESP http send
+// x    Server/Database
 // x    SPI Slave mode
 // x    CH32 Sleep/standby for N minutes
 // x    Button wakeup
+// x    Handshake ESP/CH32 boot via MOSI? But.. janky current thing is working...
+// x    Make server thing a service
 // !    Measure power consumption
-//
-//
+// !    Factory reset (long button press)
+//      Status/history web page
+//      Alexa notification
+//      Email notification
+//      OTA ESP firmware update? Why tho? Can't update CH32...
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -26,6 +28,10 @@
 
 #define SYSTICK_CNTIF 0x1
 
+static constexpr int MIN_VALID_DISTANCE = 50;
+static constexpr int MAX_VALID_DISTANCE = 700;
+static constexpr int MAX_DISTANCE_TRIES = 5;
+
 //////////////////////////////////////////////////////////////////////
 // main MCU state
 
@@ -33,7 +39,13 @@ enum state_t
 {
     state_boot = 0,
     state_reading,
+    state_wait_for_esp,
     state_esp,
+    state_num
+};
+
+char const *state_name[state_num] = {
+"boot", "reading", "wait_for_esp", "esp"
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -98,6 +110,8 @@ extern "C"
 }
 
 void spi_start();
+void init_peripherals();
+void set_state(state_t new_state);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -124,36 +138,26 @@ volatile u8 char_received;
 
 u32 got_readings = 0;
 
-stopwatch_t spi_timer;
 stopwatch_t distance_timer;
-stopwatch_t vbat_timer;
+
+bool factory_reset = false;
 
 int standby_boot = 0;
-
-//////////////////////////////////////////////////////////////////////
-
-void delay_ms(int ms)
-{
-    stopwatch_t t;
-    t.reset();
-    while(t.elapsed() < ms) {
-    }
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void set_state(state_t new_state)
-{
-    printf("set_state(%d)\n", new_state);
-    state_start_ticks = ticks;
-    state = new_state;
-}
 
 //////////////////////////////////////////////////////////////////////
 
 u32 state_elapsed_ticks()
 {
     return (s32)ticks - state_start_ticks;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void set_state(state_t new_state)
+{
+    printf("set_state [%s] (%d) after %d ticks\n", state_name[new_state], new_state, state_elapsed_ticks());
+    state_start_ticks = ticks;
+    state = new_state;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -164,6 +168,8 @@ u32 state_elapsed_ticks()
 // 30.24 * 2 = 60.48 seconds per minute, so.... near enough
 // e.g. if you ask for an hour, you'll get approx 29 extra seconds
 // but the 128kHz LSI clock is wobbly anyway so whevs
+//
+// button wakes it up, hold for > N seconds to set factory_reset flag
 
 #define PFIC_SCTLR_SLEEPDEEP 0x04
 #define PFIC_SCTLR_WFITOWFE 0x08
@@ -247,12 +253,43 @@ void sleep_for_minutes(u32 minutes)
     PWR->AWUCSR &= ~PWR_AWUEN;
     PWR->CTLR &= ~PWR_CTLR_PDDS;
 
-    // reinit System Clock
+    // systick 8MHz/8000 = 1ms
+    SysTick->CTLR = 4 | 8;
+    SysTick->SR = 0;
+    SysTick->CMP = 8000 - 1;
+    SysTick->CNT = 0;
+    SysTick->CTLR = 1 | 4 | 8;
+
+    // debounce button and if button held for >5 seconds, set factory_reset flag
+    factory_reset = false;
+    u32 button_held_ticks = 0;
+    u32 tick = 0;
+    while(tick < 10) {
+        if((SysTick->SR & 1) != 0) {
+            SysTick->SR = 0;
+            tick += 1;
+            if(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON) == 0) {
+                tick = 0;
+                ++button_held_ticks;
+                if(button_held_ticks == 5000) {
+                    factory_reset = true;
+                }
+            }
+        }
+    }
+
+    // reinit System Clock to 48MHz HSI
     SystemInit();
 
     __enable_irq();
 
+    // NVIC_SystemReset();
+
     standby_boot += 1;
+
+    init_peripherals();
+    state_start_ticks = ticks;
+    set_state(state_boot);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -554,13 +591,8 @@ void init_spi(void)
     GPIO_Setup(GPIO_PORT_SPI_CLK, GPIO_PIN_SPI_CLK, GPIO_IN_FLOATING);
     GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_IN_FLOATING);
     GPIO_Setup(GPIO_PORT_SPI_MISO, GPIO_PIN_SPI_MISO, GPIO_OUT_AF_PP_10MHZ);
-    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_FLOATING);
-
-    // only init when SPI is idle
-    while(GPIO_Get(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS) == 0) {
-    }
-
-    memset(spi_tx_data, 0, sizeof(spi_tx_data));
+    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_PULLUP_DOWN);
+    GPIO_SetPullup(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
 
     SPI_Cmd(SPI1, DISABLE);
 
@@ -610,16 +642,17 @@ void init_spi(void)
         DMA_Init(DMA1_Channel3, &dma_tx);
     }
 
+    DMA_ClearFlag(0xffff);
+
+    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, ENABLE);
+
     NVIC_EnableIRQ(DMA1_Channel2_IRQn);
     NVIC_EnableIRQ(DMA1_Channel3_IRQn);
 
     DMA_ITConfig(DMA1_Channel2, DMA_IT_TC, ENABLE);
     DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
 
-    DMA_Cmd(DMA1_Channel2, ENABLE);
-    DMA_Cmd(DMA1_Channel3, ENABLE);
-
-    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, ENABLE);
+    spi_status = status_idle;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -662,7 +695,19 @@ void init_power()
 
 void init_peripherals()
 {
-    // setup all the things
+    RCC->RSTSCKR |= RCC_RMVF;
+    RCC->INTR = 0xffff;
+
+    u32 apb1_reset = RCC_TIM2RST | RCC_TIM3RST | RCC_WWDGRST | RCC_I2C1RST;
+    u32 apb2_reset = RCC_AFIORST | RCC_IOPARST | RCC_IOPBRST | RCC_IOPCRST | RCC_IOPDRST | RCC_ADC1RST | RCC_TIM1RST
+                    | RCC_SPI1RST;
+
+    RCC->APB1PRSTR |= apb1_reset;
+    RCC->APB2PRSTR |= apb2_reset;
+    RCC->APB1PRSTR &= ~apb1_reset;
+    RCC->APB2PRSTR &= ~apb2_reset;
+
+    // setup all the things (except SPI)
     init_led();
     init_power();
     init_uart1();
@@ -670,11 +715,12 @@ void init_peripherals()
     init_timer2();
     init_timer1();
     init_adc();
-    init_spi();
     init_systick();
 
-    vbat_timer.reset();
-    spi_timer.reset();
+    // don't init SPI yet, just listen on CS line for ESP to drive it high
+    GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_PULLUP_DOWN);
+    GPIO_SetPullDown(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
+
     distance_timer.reset();
 
     // switch on VBAT_SNS
@@ -685,6 +731,9 @@ void init_peripherals()
 
     // switch on the level shifter
     GPIO_Set(GPIO_PORT_LVL_OE, GPIO_MASK_LVL_OE);
+
+    // LED off to start with
+    GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
 
     printf("\n\nSysClk:%d (boot %d)\n", SystemCoreClock, standby_boot);
 }
@@ -697,6 +746,8 @@ extern "C" int user_main(void)
 
     init_peripherals();
 
+    set_state(state_boot);
+
     while(true) {
 
         switch(state)
@@ -705,9 +756,7 @@ extern "C" int user_main(void)
 
             case state_boot:
             {
-                GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (ticks & 0x7f) < 90);
-
-                if(state_elapsed_ticks() > 450 && !button.held) {
+                if(state_elapsed_ticks() > 10) {
 
                     // kick off vbat read
                     vbat_status = status_in_progress;
@@ -720,6 +769,7 @@ extern "C" int user_main(void)
                     got_readings = 0;
                     button.released = 0;
                     button.pressed = 0;
+                    GPIO_Clear(GPIO_PORT_LED, GPIO_MASK_LED);
                     set_state(state_reading);
                 }
             }
@@ -729,59 +779,94 @@ extern "C" int user_main(void)
 
             case state_reading:
             {
+                ch32_reading_payload_t *payload = outbound_payload<ch32_reading_payload_t>();
+
+                u32 elapsed = state_elapsed_ticks();
+
+                payload->flags &= ~ch32_flag_factory_reset;
+                if(factory_reset) {
+                    payload->flags |= ch32_flag_factory_reset;
+                    if(elapsed < 1000) {
+                        GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (elapsed >> 6) & 1);
+                        break;
+                    }
+                }
+                else if(state_elapsed_ticks() > 2) {
+                    GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
+                }
+
                 // if we got a VBAT reading
                 if(vbat_status == status_complete) {
 
-                    // stuff it into the SPI packet
-                    ch32_reading_payload_t *p = outbound_payload<ch32_reading_payload_t>();
-                    p->vbat = vbat_reading;
+                    // stuff it into the SPI payload
+                    payload->vbat = vbat_reading;
                     printf("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
                     vbat_status = status_idle;
                     got_readings |= reading_vbat;
                 }
 
                 // if we're ready to kick off another distance reading
-                if(distance_status == status_idle && num_distance_readings < NUM_DISTANCE_READINGS && distance_timer.elapsed() > 10) {
-                    distance_status = status_in_progress;
-                    TIM_Cmd(TIM2, ENABLE);
-                }
+                if(distance_status == status_idle) {
 
-                // got a distance reading?
-                if(distance_status == status_complete) {
+                    if(distance_timer.elapsed() > 10) {
 
-                    // stuff it into the SPI packet
-                    ch32_reading_payload_t *p = outbound_payload<ch32_reading_payload_t>();
-                    p->distance[num_distance_readings] = distance_value;
+                        distance_status = status_in_progress;
+                        TIM_Cmd(TIM2, ENABLE);
+                    }
+
+                } else if(distance_status == status_complete) {
+
                     printf("DISTANCE[%d] = %d [0x%04x]\n", num_distance_readings, distance_value, distance_value);
 
-                    // setup delay before next reading
-                    distance_timer.reset();
-
-                    distance_status = status_idle;
                     num_distance_readings += 1;
 
-                    // got enough distance readings?
-                    if(num_distance_readings == NUM_DISTANCE_READINGS) {
+                    if(MIN_VALID_DISTANCE <= distance_value && distance_value <= MAX_VALID_DISTANCE) {
 
-                        // finalize the SPI packet
-                        init_message<ch32_reading_payload_t>(outbound_message());
-                        printf("CRC: %08x\n", outbound_message()->crc);
+                        payload->distance = distance_value;
+                        got_readings |= reading_distance;
+
+                    } else if(num_distance_readings < MAX_DISTANCE_TRIES) {
+
+                        distance_timer.reset();
+                        distance_status = status_idle;
+
+                    } else {
+
+                        payload->distance = 0;
                         got_readings |= reading_distance;
                     }
                 }
 
-                // got VBAT and all distance readings?
+                // got VBAT and distance readings?
                 if(got_readings == reading_all) {
 
-                    // start listening on SPI
-                    spi_start();
-                    set_state(state_esp);
+                    // switch off the blasted led for sure
+                    GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
+
+                    // start listening for ESP to be ready
+                    init_message<ch32_reading_payload_t>(outbound_message());
+                    set_state(state_wait_for_esp);
                 }
 
                 // timeout on the readings... what to do?
                 if(state_elapsed_ticks() > 3000) {
                     printf("Where's the readings?\n");
                     NVIC_SystemReset();
+                }
+            }
+            break;
+
+            ////////////////////////////////////////
+            // don't switch on the SPI until the ESP has driven SPI CS high
+            // otherwise spurious CS line shenanigans cause a headache
+
+            case state_wait_for_esp:
+            {
+                if(GPIO_Get(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS) != 0) {
+
+                    init_spi();
+                    spi_start();
+                    set_state(state_esp);
                 }
             }
             break;
@@ -794,8 +879,25 @@ extern "C" int user_main(void)
                 if(spi_status == status_complete) {
                     spi_status = status_idle;
 
-                    bool ok = check_crc32((message_t const *)spi_rx_data);
-                    if(state_elapsed_ticks() < 100000) {
+                    message_t const *msg = reinterpret_cast<message_t const *>(spi_rx_data);
+                    bool ok = check_crc32(msg);
+
+                    esp_status_payload_t const *status = reinterpret_cast<esp_status_payload_t const *>(&msg->body.payload);
+
+                    if((status->flags & esp_status_spi_error) != 0) {
+                        printf("SPI ERROR! Resetting SPI\n");
+                        init_spi();
+                        spi_start();
+                    }
+
+                    if((status->flags & (esp_status_send_error | esp_status_sent_reading)) != 0) {
+                        printf("ESP done, switch off/sleep etc...\n");
+                        flush_printf();
+
+                        sleep_for_minutes(180);
+                    }
+
+                    if(state_elapsed_ticks() < 5000) {
                         printf("SPI (%d) ", ok);
                         for(int i=0; i<SPI_DATA_SIZE; ++i) {
                             printf("%02x", spi_rx_data[i]);
@@ -804,14 +906,14 @@ extern "C" int user_main(void)
                     }
                 }
 
-                // @DEBUG button release puts it to sleep
+                // @DEBUG button puts it to sleep
 
-                if(button.released) {
+                if(button.pressed) {
+                    while(button.held) {
+                    }
                     printf("Sleeping...\n");
                     flush_printf();
                     sleep_for_minutes(180);
-                    init_peripherals();
-                    set_state(state_boot);
                 }
             }
             break;

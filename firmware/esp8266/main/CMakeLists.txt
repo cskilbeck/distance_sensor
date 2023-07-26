@@ -3,8 +3,8 @@ idf_component_register(
         "main.cpp"
         "crc.cpp"
         "util.cpp"
-        "websocket.cpp"
         "wifi.cpp"
         "spi.cpp"
+        "http_client.cpp"
     INCLUDE_DIRS
         ".")

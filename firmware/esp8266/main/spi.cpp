@@ -62,6 +62,7 @@ namespace
     EventGroupHandle_t spi_eventgroup;
 
     on_spi_callback spi_callback;
+    on_spi_callback spi_error_callback;
 
     void hspi_transaction(uint32_t const *send, uint32_t *recv)
     {
@@ -114,16 +115,17 @@ namespace
 
                     message_t const *msg = reinterpret_cast<message_t const *>(miso_buffer[index]);
 
-                    // ESP_LOGI(TAG, "GOT %08x%08x%08x%08x%08x%08x%08x%08x", miso_buffer[index][0], miso_buffer[index][1], miso_buffer[index][2],
-                    //          miso_buffer[index][3], miso_buffer[index][4], miso_buffer[index][5], miso_buffer[index][6], miso_buffer[index][7]);
-
                     log_buffer(TAG, miso_buffer[index], 32, ESP_LOG_INFO);
 
                     if(check_crc32(msg)) {
-                        spi_callback(msg);
+                        if(spi_callback != null) {
+                            spi_callback(msg);
+                        }
                     } else {
-                        // ESP_LOGE(TAG, "CRC err got %08x, expected %08x", msg->crc, calc_crc32((uint8_t const *)miso_buffer[index],
-                        // sizeof(miso_buffer[index])));
+                        ESP_LOGE(TAG, "CRC err got %08x, expected %08x", msg->crc, calc_crc32((uint8_t const *)miso_buffer[index], sizeof(miso_buffer[index])));
+                        if(spi_error_callback != null) {
+                            spi_error_callback(msg);
+                        }
                     }
 
                     xEventGroupSetBits(spi_eventgroup, BUF_0_EMPTY << index);
@@ -137,11 +139,12 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-void init_spi(on_spi_callback callback)
+void init_spi(on_spi_callback callback, on_spi_callback error_callback)
 {
-    spi_callback = callback;
-
     ESP_LOGI(TAG, "init_spi");
+
+    spi_error_callback = error_callback;
+    spi_callback = callback;
 
     CLEAR_PERI_REG_MASK(HSPI_CMD, SPI_USR);
 

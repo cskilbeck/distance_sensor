@@ -6,8 +6,6 @@
 
 #define SPI_DATA_SIZE 32
 
-#define NUM_DISTANCE_READINGS 12    // (SPI_DATA_SIZE - crc(4) - ident(1) - length(1) - vbat(2) ) / sizeof(uint16)
-
 //////////////////////////////////////////////////////////////////////
 
 struct message_body_t
@@ -43,18 +41,30 @@ struct ch32_reading_payload_t
     static uint8_t constexpr id = msg_id_ch32_readings;
 
     uint16_t vbat;
-    uint16_t distance[NUM_DISTANCE_READINGS];
+    uint16_t distance;
+    uint16_t flags;
 };
 
+static constexpr uint32_t ch32_flag_factory_reset = 1 << 0;
+
 //////////////////////////////////////////////////////////////////////
-// ESP->CH32 ESP has booted
+// ESP->CH32 ESP has booted/connected/sent etc
 
 struct esp_status_payload_t
 {
     static uint8_t constexpr id = msg_id_esp_status;
 
-    uint32_t status;
+    uint16_t flags;
 };
+
+static constexpr uint32_t esp_status_booted = 1 << 0;
+static constexpr uint32_t esp_status_connected = 1 << 1;
+static constexpr uint32_t esp_status_got_reading = 1 << 2;
+static constexpr uint32_t esp_status_sent_reading = 1 << 3;
+static constexpr uint32_t esp_status_send_error = 1 << 4;
+static constexpr uint32_t esp_status_spi_error = 1 << 5;
+static constexpr uint32_t esp_status_wifi_reset = 1 << 6;
+static constexpr uint32_t esp_status_wifi_timeout = 1 << 7;
 
 //////////////////////////////////////////////////////////////////////
 
