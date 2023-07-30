@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-int user_main(void);
+    int user_main(void);
 
 #ifdef __cplusplus
 extern }

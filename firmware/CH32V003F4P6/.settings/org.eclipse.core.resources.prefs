@@ -37,6 +37,7 @@ encoding//User/ch32v00x_it.c=GBK
 encoding//User/ch32v00x_it.h=GBK
 encoding//User/crc.cpp=GBK
 encoding//User/crc.h=GBK
+encoding//User/int_types.h=GBK
 encoding//User/main.c=GBK
 encoding//User/system_ch32v00x.c=GBK
 encoding//User/system_ch32v00x.h=GBK

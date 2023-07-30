@@ -1,6 +1,7 @@
 #pragma once
 
-void initialise_wifi();
+void init_wifi();
+void deinit_wifi();
 
 typedef void (*wifi_callback)();
 

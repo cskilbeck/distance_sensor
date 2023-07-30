@@ -10,6 +10,7 @@
 * microcontroller manufactured by Nanjing Qinheng Microelectronics.
 *******************************************************************************/
 #include <ch32v00x_it.h>
+#include <ch32v00x_gpio.h>
 #include "user_gpio.h"
 #include "user_pins.h"
 

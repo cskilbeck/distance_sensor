@@ -13,6 +13,9 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "esp8266/gpio_register.h"
+#include "esp8266/gpio_struct.h"
+#include "driver/gpio.h"
 
 #include "esp_spi_flash.h"
 
@@ -31,12 +34,12 @@ namespace
 
     // default mac address is used as unique device id
 
-    char mac_addr_str[13];
+    char mac_addr[13];
 
     // server is here
 
-    // char const *server_ip = "192.168.4.52";
-    char const *server_ip = "vibue.com";
+    // char const *server_host = "192.168.4.52";
+    char const *server_host = "vibue.com";
     char const *server_port = "5002";
     char const *server_path = "reading";
 
@@ -52,6 +55,48 @@ namespace
 
     message_t status_msg;
     esp_status_payload_t *status = reinterpret_cast<esp_status_payload_t *>(&status_msg.body.payload);
+
+    //////////////////////////////////////////////////////////////////////
+
+    enum led_state_t
+    {
+        on = 0,
+        off = 1
+    };
+
+    void led_on()
+    {
+        GPIO.out_w1tc |= GPIO_Pin_4;
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void led_off()
+    {
+        GPIO.out_w1ts |= GPIO_Pin_4;
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void led_set(led_state_t on_or_off)
+    {
+        if(on_or_off) {
+            led_on();
+        } else {
+            led_off();
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void led_toggle()
+    {
+        if((GPIO.out & GPIO_Pin_4) != 0) {
+            led_on();
+        } else {
+            led_off();
+        }
+    }
 
     //////////////////////////////////////////////////////////////////////
     // if all is in order, signal main task to send reading to the server
@@ -93,6 +138,7 @@ namespace
     void spi_error(message_t const *msg)
     {
         ESP_LOGI(TAG, "SPI ERROR");
+        led_toggle();
         status->flags |= esp_status_spi_error;
     }
 
@@ -112,6 +158,21 @@ namespace
     void wifi_disconnected_callback()
     {
         ESP_LOGI(TAG, "WIFI DISCONNECTED!");
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void init_led()
+    {
+        GPIO.out_w1ts |= (0x1 << 4);
+
+        gpio_config_t p4_config;
+        p4_config.pin_bit_mask = GPIO_Pin_4;
+        p4_config.mode = GPIO_MODE_OUTPUT;
+        p4_config.pull_up_en = GPIO_PULLUP_DISABLE;
+        p4_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        p4_config.intr_type = GPIO_INTR_DISABLE;
+        gpio_config(&p4_config);
     }
 
 }    // namespace
@@ -136,8 +197,10 @@ extern "C" void app_main()
 
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
-    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    ESP_LOGI(TAG, "MAC ADDRESS: %s", mac_addr_str);
+    sprintf(mac_addr, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    ESP_LOGI(TAG, "MAC ADDRESS: %s", mac_addr);
+
+    init_led();
 
     // setup the spi hardware and set the callback for when stuff is received
 
@@ -151,6 +214,9 @@ extern "C" void app_main()
     send_event_bits = xEventGroupCreate();
 
     // start the wifi connecting
+
+    tcpip_adapter_init();
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     on_wifi_connected = wifi_connected_callback;
     on_wifi_disconnected = wifi_disconnected_callback;
@@ -177,15 +243,17 @@ extern "C" void app_main()
     if((reading->flags & ch32_flag_factory_reset) != 0) {
 
         ESP_LOGI(TAG, "FACTORY RESET BNABNY!");
-        // clear the wifi persistent credentials flag
-        esp_wifi_restore();
+
+        esp_wifi_restore();    // clear the wifi settings (including ssid, password)
+        deinit_wifi();
+        init_wifi();
 
     } else {
 
         for(int tries = 0; tries < 2; ++tries) {
 
             static char url[500];
-            sprintf(url, "http://%s:%s/%s?vbat=%d&distance=%d&device=%s", server_ip, server_port, server_path, reading->vbat, reading->distance, mac_addr_str);
+            sprintf(url, "http://%s:%s/%s?vbat=%d&distance=%d&device=%s", server_host, server_port, server_path, reading->vbat, reading->distance, mac_addr);
             if(http_get(url) == ESP_OK) {
                 status->flags |= esp_status_sent_reading;
                 sent = true;

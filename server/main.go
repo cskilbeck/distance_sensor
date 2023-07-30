@@ -14,7 +14,9 @@ import (
     "log"
     "net/http"
     "os"
+    "runtime"
     "strconv"
+    "strings"
 )
 
 //////////////////////////////////////////////////////////////////////
@@ -58,8 +60,6 @@ func init_log_level(log_level_name string) {
         "error",
     }
 
-    var log_handle []io.Writer = make([]io.Writer, 5)
-
     var log_level = 2 // level is info by default
 
     found := true
@@ -70,7 +70,7 @@ func init_log_level(log_level_name string) {
 
         for i, name := range log_names {
 
-            if log_level_name == name {
+            if strings.EqualFold(log_level_name, name) {
 
                 log_level = i
                 found = true
@@ -79,21 +79,21 @@ func init_log_level(log_level_name string) {
         }
     }
 
-    for i := 0; i < log_level; i++ {
+    var loggers []*log.Logger = make([]*log.Logger, 5)
 
-        log_handle[i] = io.Discard
+    for i := 0; i < log_level; i++ {
+        loggers[i] = logger.New(io.Discard, "", 0)
     }
 
     for i := log_level; i < 5; i++ {
-
-        log_handle[i] = os.Stdout
+        loggers[i] = logger.New(os.Stdout, strings.ToUpper(log_names[i])+":", log.Ldate|log.Ltime|log.Lshortfile)
     }
 
-    Debug = log.New(log_handle[0], "DEBUG:", log.Ldate|log.Ltime|log.Lshortfile)
-    Verbose = log.New(log_handle[1], "VERBOSE:", log.Ldate|log.Ltime|log.Lshortfile)
-    Info = log.New(log_handle[2], "INFO:", log.Ldate|log.Ltime|log.Lshortfile)
-    Warning = log.New(log_handle[3], "WARNING:", log.Ldate|log.Ltime|log.Lshortfile)
-    Error = log.New(log_handle[4], "ERROR:", log.Ldate|log.Ltime|log.Lshortfile)
+    Debug = loggers[0]
+    Verbose = loggers[1]
+    Info = loggers[2]
+    Warning = loggers[3]
+    Error = loggers[4]
 
     if !found {
         Error.Printf("Unknown log level \"%s\", defaulting to log level \"%s\"", log_level_name, log_names[log_level])
@@ -108,17 +108,21 @@ func load_credentials(credentials_filename string) {
 
     if len(credentials_filename) == 0 {
 
-        log.Fatalf("Credentials filename not specified, use -credentials <filename>")
+        log.Fatal("Credentials filename not specified, use -credentials <filename>")
     }
 
     if content, err := os.ReadFile(credentials_filename); err != nil {
 
-        log.Fatalf("Can't load %s: %s", credentials_filename, err)
+        log.Fatalf("Can't load credentials file %s: %s", credentials_filename, err)
 
-    } else if err := json.Unmarshal(content, &db_credentials); err != nil {
+    }
+
+    if err := json.Unmarshal(content, &db_credentials); err != nil {
 
         log.Fatalf("Can't parse %s: %s", credentials_filename, err)
     }
+
+    Verbose.Printf("Loaded credentials file %s", credentials_filename)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -147,6 +151,7 @@ func open_database() {
 //////////////////////////////////////////////////////////////////////
 
 func close_database() {
+
     Debug.Println("Closing database")
     db.Close()
 }
@@ -162,6 +167,7 @@ func get_device_id(name string) (id int64, err error) {
                               WHERE NOT EXISTS
                               (SELECT * FROM devices WHERE device_name=?) LIMIT 1;`, name, name)
     if err != nil {
+
         Error.Printf("Device insert error %s", err)
         return 0, err
     }
@@ -230,10 +236,11 @@ var json_ok = Response{
 //////////////////////////////////////////////////////////////////////
 
 func get_json(r Response) []byte {
-    s, err := json.Marshal(r)
-    if err == nil {
+
+    if s, err := json.Marshal(r); err == nil {
         return s
     }
+
     return []byte(`{"huh":"say wha?"}`)
 }
 
@@ -310,6 +317,7 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
     Debug.Printf("Reading ID %d\n", reading_id)
     w.WriteHeader(http.StatusOK)
     w.Write(get_json(json_ok))
+    Debug.Printf("Sending body: %s", get_json(json_ok))
 }
 
 //////////////////////////////////////////////////////////////////////
