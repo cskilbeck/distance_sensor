@@ -52,13 +52,14 @@ namespace
     constexpr uint32 main_bit_count = 2;
     constexpr uint32 main_bit_mask = (1 << main_bit_count) - 1;
 
-    // copy of the message from ch32 with the readings in it
+    // spi message from ch32
 
     message_t spi_msg_received;
 
-    // a message for sending esp status to ch32
+    // spi message to send esp status to ch32
 
     message_t status_msg;
+
     esp_status_payload_t *status = reinterpret_cast<esp_status_payload_t *>(&status_msg.body.payload);
 
     //////////////////////////////////////////////////////////////////////
@@ -112,9 +113,9 @@ extern "C" void app_main()
 
     init_led();
 
-    // setup the spi hardware and set the callback for when stuff is received
+    // setup the spi hardware
 
-    init_spi(null, null);    // spi_received, spi_error);
+    init_spi();
 
     // give CH32 ~1/50th of a second to get SPI slave ready
     vTaskDelay(2);

@@ -39,30 +39,10 @@
 #define SPI_BITLEN ((SPI_DATA_SIZE * 8) - 1)
 
 //////////////////////////////////////////////////////////////////////
-// event bits
-
-#define BUF_0_FULL 1
-#define BUF_1_FULL 2
-#define BUF_0_EMPTY 4
-#define BUF_1_EMPTY 8
-
-#define BUF_ANY_FULL (BUF_0_FULL | BUF_1_FULL)
-#define BUF_ANY_EMPTY (BUF_0_EMPTY | BUF_1_EMPTY)
-
-//////////////////////////////////////////////////////////////////////
 
 namespace
 {
     char const *TAG = "spi";
-
-    uint32_t mosi_buffer[2][SPI_DATA_SIZE / sizeof(uint32_t)];
-    uint32_t miso_buffer[2][SPI_DATA_SIZE / sizeof(uint32_t)];
-
-    TaskHandle_t spi_task_handle = null;
-    EventGroupHandle_t spi_eventgroup;
-
-    on_spi_callback spi_callback;
-    on_spi_callback spi_error_callback;
 
     void hspi_transaction(uint32_t const *send, uint32_t *recv)
     {
@@ -94,57 +74,13 @@ namespace
         recv[6] = HSPI_W8[6];
         recv[7] = HSPI_W8[7];
     }
-
-    //////////////////////////////////////////////////////////////////////
-
-    void spi_task(void *)
-    {
-        ESP_LOGI(TAG, "spi task begins...");
-
-        while(true) {
-
-            EventBits_t bits = xEventGroupWaitBits(spi_eventgroup, BUF_ANY_FULL, true, false, -1);
-
-            int index = 0;
-
-            for(int x = BUF_0_FULL; x <= BUF_1_FULL; x <<= 1) {
-
-                if((bits & x) != 0) {
-
-                    hspi_transaction(mosi_buffer[index], miso_buffer[index]);
-
-                    message_t const *msg = reinterpret_cast<message_t const *>(miso_buffer[index]);
-
-                    log_buffer(TAG, miso_buffer[index], 32, ESP_LOG_INFO);
-
-                    if(check_crc32(msg)) {
-                        if(spi_callback != null) {
-                            spi_callback(msg);
-                        }
-                    } else {
-                        ESP_LOGE(TAG, "CRC err got %08x, expected %08x", msg->crc, calc_crc32((uint8_t const *)miso_buffer[index], sizeof(miso_buffer[index])));
-                        if(spi_error_callback != null) {
-                            spi_error_callback(msg);
-                        }
-                    }
-
-                    xEventGroupSetBits(spi_eventgroup, BUF_0_EMPTY << index);
-                }
-                index += 1;
-            }
-        }
-    }
-
 }    // namespace
 
 //////////////////////////////////////////////////////////////////////
 
-void init_spi(on_spi_callback callback, on_spi_callback error_callback)
+void init_spi()
 {
     ESP_LOGI(TAG, "init_spi");
-
-    spi_error_callback = error_callback;
-    spi_callback = callback;
 
     CLEAR_PERI_REG_MASK(HSPI_CMD, SPI_USR);
 
@@ -166,26 +102,6 @@ void init_spi(on_spi_callback callback, on_spi_callback error_callback)
     temp |= SPI_CK_OUT_EDGE | SPI_USR_MISO_HIGHPART | SPI_USR_MOSI | SPI_USR_MISO;
 
     WRITE_PERI_REG(HSPI_USER, temp);
-
-    spi_eventgroup = xEventGroupCreate();
-    xEventGroupSetBits(spi_eventgroup, BUF_ANY_EMPTY);    // buffers both available
-
-    xTaskCreate(spi_task, "spi_task", 2048, null, 1, &spi_task_handle);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void spi_send(message_t const *msg)
-{
-    EventBits_t bits = xEventGroupWaitBits(spi_eventgroup, BUF_ANY_EMPTY, true, false, -1);
-    int index = 0;
-    for(int x = BUF_0_EMPTY; x <= BUF_1_EMPTY; x <<= 1) {
-        if((bits & x) != 0) {
-            memcpy(mosi_buffer[index], msg, SPI_DATA_SIZE);
-            xEventGroupSetBits(spi_eventgroup, (BUF_0_FULL << index));
-            break;
-        }
-    }
 }
 
 //////////////////////////////////////////////////////////////////////

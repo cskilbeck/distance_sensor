@@ -21,7 +21,7 @@ struct message_t
 {
     message_body_t body;
     uint32_t crc;
-};
+} __attribute__((aligned(4)));
 
 static_assert(sizeof(message_t) == SPI_DATA_SIZE);
 
