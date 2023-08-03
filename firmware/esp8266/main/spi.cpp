@@ -187,3 +187,11 @@ void spi_send(message_t const *msg)
         }
     }
 }
+
+//////////////////////////////////////////////////////////////////////
+
+bool spi_send_now(message_t const *msg, message_t *reply)
+{
+    hspi_transaction(reinterpret_cast<uint32_t const *>(msg), reinterpret_cast<uint32_t *>(reply));
+    return check_crc32(reply);
+}

@@ -5,18 +5,19 @@ CREATE DATABASE salt_sensor;
 USE salt_sensor;
 
 CREATE TABLE devices (
-        device_id INT NOT NULL AUTO_INCREMENT,
-        device_name VARCHAR(128) UNIQUE,
+        device_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        device_name VARCHAR(12) UNIQUE NOT NULL,
         PRIMARY KEY(device_id)
 );
 
 CREATE TABLE readings (
-        reading_id INT NOT NULL AUTO_INCREMENT,
-        device_id INT NOT NULL,
-        reading_vbat INT,
-        reading_distance INT,
-        reading_timestamp TIMESTAMP,
-        PRIMARY KEY(reading_id)
+        reading_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        device_id INT UNSIGNED NOT NULL,
+        reading_vbat SMALLINT UNSIGNED NOT NULL,
+        reading_distance SMALLINT UNSIGNED NOT NULL,
+        reading_flags SMALLINT UNSIGNED NOT NULL,
+        reading_timestamp TIMESTAMP NOT NULL,
+        PRIMARY KEY(reading_id),
 );
 
 CREATE INDEX readings_index 

@@ -39,7 +39,6 @@ wifi_callback on_wifi_disconnected;
 
 namespace
 {
-
     char const *TAG = "wifi";
 
     EventGroupHandle_t s_wifi_event_group;
@@ -60,17 +59,17 @@ namespace
         smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_smartconfig_start(&cfg));
 
-        while(1) {
+        while(true) {
 
-            uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
+            uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
 
             if(uxBits & CONNECTED_BIT) {
                 ESP_LOGI(TAG, "WiFi Connected to ap");
             }
 
             if(uxBits & ESPTOUCH_DONE_BIT) {
-                ESP_LOGI(TAG, "smartconfig over");
                 esp_smartconfig_stop();
+                ESP_LOGI(TAG, "SmartConfig STOPPING");
                 vTaskDelete(NULL);
             }
         }
@@ -86,16 +85,21 @@ namespace
 
             switch(event_id) {
 
+            case WIFI_EVENT_STA_STOP:
+                ESP_LOGI(TAG, "WIFI Stopped");
+                break;
+
             case WIFI_EVENT_STA_START:
                 xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
                 break;
 
             case WIFI_EVENT_STA_DISCONNECTED:
-                esp_wifi_connect();
                 xEventGroupClearBits(s_wifi_event_group, CONNECTED_BIT);
                 if(on_wifi_disconnected != null) {
                     on_wifi_disconnected();
                 }
+                ESP_LOGI(TAG, "Reconnecting...");
+                esp_wifi_connect();
                 break;
             }
         }
@@ -180,9 +184,8 @@ void deinit_wifi()
 {
     ESP_LOGI(TAG, "de-init");
 
-    esp_wifi_disconnect();
-    esp_wifi_deinit();
-    vEventGroupDelete(s_wifi_event_group);
+    esp_wifi_stop();
+    esp_wifi_start();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -190,6 +193,8 @@ void deinit_wifi()
 void init_wifi()
 {
     ESP_LOGI(TAG, "init");
+
+    tcpip_adapter_init();
 
     s_wifi_event_group = xEventGroupCreate();
 

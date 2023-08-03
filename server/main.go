@@ -13,8 +13,8 @@ import (
     "io"
     "log"
     "net/http"
+    "net/url"
     "os"
-    "runtime"
     "strconv"
     "strings"
 )
@@ -23,9 +23,8 @@ import (
 // HTTP response body
 
 type Response struct {
-    Status      string `json:"status"`
-    Error       string `json:"error"`
-    Description string `json:"description"`
+    Status string   `json:"status"`
+    Info   []string `json:"info"`
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -50,7 +49,14 @@ var Error *log.Logger
 
 //////////////////////////////////////////////////////////////////////
 
-func init_log_level(log_level_name string) {
+func Err(format string, args ...any) error {
+
+    return errors.New(fmt.Sprintf(format, args...))
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func set_log_level(log_level_name string) (e error) {
 
     log_names := [5]string{
         "debug",
@@ -82,11 +88,11 @@ func init_log_level(log_level_name string) {
     var loggers []*log.Logger = make([]*log.Logger, 5)
 
     for i := 0; i < log_level; i++ {
-        loggers[i] = logger.New(io.Discard, "", 0)
+        loggers[i] = log.New(io.Discard, "", 0)
     }
 
     for i := log_level; i < 5; i++ {
-        loggers[i] = logger.New(os.Stdout, strings.ToUpper(log_names[i])+":", log.Ldate|log.Ltime|log.Lshortfile)
+        loggers[i] = log.New(os.Stdout, strings.ToUpper(log_names[i])+": ", 0)
     }
 
     Debug = loggers[0]
@@ -96,38 +102,43 @@ func init_log_level(log_level_name string) {
     Error = loggers[4]
 
     if !found {
-        Error.Printf("Unknown log level \"%s\", defaulting to log level \"%s\"", log_level_name, log_names[log_level])
+        return Err("Unknown log level \"%s\"", log_level_name)
     }
 
     Debug.Printf("Log level set to \"%s\"", log_names[log_level])
+
+    return nil
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func load_credentials(credentials_filename string) {
+func load_credentials(credentials_filename string) (e error) {
 
     if len(credentials_filename) == 0 {
 
-        log.Fatal("Credentials filename not specified, use -credentials <filename>")
+        return errors.New("Missing credentials filename")
     }
 
-    if content, err := os.ReadFile(credentials_filename); err != nil {
+    var err error
+    var content []byte
 
-        log.Fatalf("Can't load credentials file %s: %s", credentials_filename, err)
+    if content, err = os.ReadFile(credentials_filename); err != nil {
 
+        return Err("Loading credentials, can't %s", err)
     }
 
-    if err := json.Unmarshal(content, &db_credentials); err != nil {
+    if err = json.Unmarshal(content, &db_credentials); err != nil {
 
-        log.Fatalf("Can't parse %s: %s", credentials_filename, err)
+        return Err("Error parsing %s: %s", credentials_filename, err)
     }
 
     Verbose.Printf("Loaded credentials file %s", credentials_filename)
+    return nil
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func open_database() {
+func open_database() (e error) {
 
     cfg := mysql.Config{
         User:                 db_credentials.Username,
@@ -143,9 +154,10 @@ func open_database() {
     var err error
     db, err = sql.Open("mysql", cfg.FormatDSN())
     if err != nil {
-        log.Fatalf("Can't open database, %s", err)
+        return Err("Can't open database, %s", err)
     }
     Debug.Println("Database opened")
+    return nil
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -160,7 +172,7 @@ func close_database() {
 
 func get_device_id(name string) (id int64, err error) {
 
-    Debug.Printf("Get device id for %s\n", name)
+    Debug.Printf("Get device id for %s", name)
 
     _, err = db.Exec(`INSERT INTO devices (device_name)
                               SELECT * FROM (SELECT ?) AS tmp
@@ -184,60 +196,24 @@ func get_device_id(name string) (id int64, err error) {
 
 //////////////////////////////////////////////////////////////////////
 
-func add_reading(device_id int64, vbat uint16, distance uint16) (id int64, err error) {
+func add_reading(device_id int64, vbat uint16, distance uint16, flags uint16) (int64, error) {
 
-    res, err := db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_timestamp)
-                         VALUES (?,?,?,CURRENT_TIMESTAMP());`, device_id, vbat, distance)
+    res, err := db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp)
+                         VALUES (?,?,?,?,CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags)
 
     if err == nil {
         return res.LastInsertId()
     } else {
+        Error.Printf("add_reading: %s", err.Error())
         return 0, err
     }
 }
 
 //////////////////////////////////////////////////////////////////////
 
-var method_not_allowed = Response{
-
-    Status: "error",
-    Error:  "Method not allowed",
-}
-
-var missing_query_paramters = Response{
-
-    Status: "error",
-    Error:  "Missing query parameter(s)",
-}
-
-var bad_parameter = Response{
-
-    Status: "error",
-    Error:  "Bad parameter",
-}
-
-var device_id_error = Response{
-
-    Status: "error",
-    Error:  "Can't add or find device in database",
-}
-
-var reading_id_error = Response{
-
-    Status: "error",
-    Error:  "Can't add reading to database",
-}
-
-var json_ok = Response{
-
-    Status: "OK",
-}
-
-//////////////////////////////////////////////////////////////////////
-
 func get_json(r Response) []byte {
 
-    if s, err := json.Marshal(r); err == nil {
+    if s, err := json.MarshalIndent(r, "", "  "); err == nil {
         return s
     }
 
@@ -246,78 +222,123 @@ func get_json(r Response) []byte {
 
 //////////////////////////////////////////////////////////////////////
 
+func responds(status string, errs []string) []byte {
+
+    var r Response
+    r.Status = status
+    r.Info = errs
+    return get_json(r)
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func respondf(status string, err string, args ...any) []byte {
+
+    var r Response
+    r.Status = status
+    r.Info = make([]string, 1)
+    r.Info[0] = fmt.Sprintf(err, args...)
+    return get_json(r)
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func parse_param(name string, base int, bits int, values *url.Values) (uint64, error) {
+
+    param := (*values)[name]
+
+    if len(param) < 1 {
+        return 0, Err("Missing parameter %s", name)
+    }
+
+    if len(param) > 1 {
+        return 0, Err("Duplicate parameter %s", name)
+    }
+
+    v, err := strconv.ParseUint(param[0], base, bits)
+
+    if err != nil {
+        return 0, Err("Bad value for '%s' (%s)", name, err.Error())
+    }
+    return v, nil
+}
+
+//////////////////////////////////////////////////////////////////////
+
 func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
-    Debug.Printf("GOT a GET!")
+    w.Header().Set("Content-Type", "application/json")
 
     if r.Method != "GET" {
         w.WriteHeader(http.StatusMethodNotAllowed)
-        w.Write(get_json(method_not_allowed))
+        w.Write(respondf("error", "Method %s not allowed", r.Method))
         return
     }
 
-    vbat_param := r.URL.Query()["vbat"]
-    distance_param := r.URL.Query()["distance"]
-    device_param := r.URL.Query()["device"]
+    Verbose.Printf("GET %s", r.URL)
 
-    if len(vbat_param) != 1 || len(distance_param) != 1 || len(device_param) != 1 {
+    var err error
+
+    var errors = make([]string, 0)
+
+    var vbat uint64
+    var distance uint64
+    var device uint64
+    var flags uint64
+
+    q := r.URL.Query()
+
+    if vbat, err = parse_param("vbat", 10, 16, &q); err != nil {
+        errors = append(errors, err.Error())
+    }
+
+    if distance, err = parse_param("distance", 10, 16, &q); err != nil {
+        errors = append(errors, err.Error())
+    }
+
+    if device, err = parse_param("device", 16, 48, &q); err != nil {
+        errors = append(errors, err.Error())
+    }
+
+    if flags, err = parse_param("flags", 10, 16, &q); err != nil {
+        errors = append(errors, err.Error())
+    }
+
+    if len(errors) != 0 {
         w.WriteHeader(http.StatusBadRequest)
-        w.Write(get_json(missing_query_paramters))
+        w.Write(responds("error", errors))
         return
     }
 
-    const bad_param_fmt = "Can't parse %s for parameter %s"
+    Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x", vbat, distance, flags, device)
 
-    vbat, err := strconv.ParseUint(vbat_param[0], 10, 16)
-    if err != nil {
-        r := bad_parameter
-        r.Description = fmt.Sprintf(bad_param_fmt, vbat_param[0], "vbat")
-        w.WriteHeader(http.StatusBadRequest)
-        w.Write(get_json(r))
+    if err := open_database(); err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        w.Write(respondf("error", "Error opening database: %s", err.Error()))
         return
     }
-
-    distance, err := strconv.ParseUint(distance_param[0], 10, 16)
-    if err != nil {
-        var r = bad_parameter
-        r.Description = fmt.Sprintf(bad_param_fmt, distance_param[0], "distance")
-        w.WriteHeader(http.StatusBadRequest)
-        w.Write(get_json(r))
-        return
-    }
-
-    device, err := strconv.ParseUint(device_param[0], 16, 48)
-    if err != nil {
-        var r = bad_parameter
-        r.Description = fmt.Sprintf(bad_param_fmt, device_param[0], "device")
-        w.WriteHeader(http.StatusBadRequest)
-        w.Write(get_json(r))
-        return
-    }
+    defer close_database()
 
     device_name := fmt.Sprintf("%012x", device)
-
-    open_database()
-    defer close_database()
 
     device_id, err := get_device_id(device_name)
     if err != nil {
         w.WriteHeader(http.StatusInternalServerError)
-        w.Write(get_json(device_id_error))
+        w.Write(respondf("error", "Error accessing database for device %s: %s", device_name, err.Error()))
         return
     }
-    Debug.Printf("Device connects: ID %d\n", device_id)
+    Debug.Printf("Device ID %d", device_id)
 
-    reading_id, err := add_reading(device_id, uint16(vbat), uint16(distance))
+    reading_id, err := add_reading(device_id, uint16(vbat), uint16(distance), uint16(flags))
     if err != nil {
-        w.WriteHeader(http.StatusBadRequest)
-        w.Write(get_json(reading_id_error))
+        w.WriteHeader(http.StatusInternalServerError)
+        w.Write(respondf("error", "Error adding reading to database: %s", err.Error()))
         return
     }
-    Debug.Printf("Reading ID %d\n", reading_id)
+    Debug.Printf("Reading ID %d", reading_id)
     w.WriteHeader(http.StatusOK)
-    w.Write(get_json(json_ok))
-    Debug.Printf("Sending body: %s", get_json(json_ok))
+    w.Write(respondf("OK", "reading id %d", reading_id))
+    Debug.Printf("OK")
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -327,15 +348,38 @@ func main() {
     var credentials_filename string
     var log_level_name string
 
-    flag.StringVar(&credentials_filename, "credentials", "", "Where is the credentials filename")
+    flag.StringVar(&credentials_filename, "credentials", "", "Specify credentials filename (required)")
     flag.StringVar(&log_level_name, "log_level", "info", "Specify log level (debug|verbose|info|warning|error)")
     flag.Parse()
 
-    init_log_level(log_level_name)
+    errs := make([]error, 0)
 
-    load_credentials(credentials_filename)
+    if err := set_log_level(log_level_name); err != nil {
+        errs = append(errs, err)
+    }
 
-    Info.Printf("Serving HTTP...\n")
+    if err := load_credentials(credentials_filename); err != nil {
+        errs = append(errs, err)
+    }
+
+    if len(errs) != 0 {
+
+        for _, e := range errs {
+            fmt.Printf("%s", e.Error())
+        }
+
+        fmt.Printf("\nUsage:\n")
+        flag.PrintDefaults()
+        fmt.Println()
+
+        exit_code := 0
+        if len(errs) != 0 {
+            exit_code = 1
+        }
+        os.Exit(exit_code)
+    }
+
+    Info.Printf("Serving HTTP...")
 
     http.HandleFunc("/reading", http_reading_handler)
 
@@ -343,10 +387,10 @@ func main() {
 
     if errors.Is(err, http.ErrServerClosed) {
 
-        Info.Printf("Server closed\n")
+        Info.Printf("Server closed")
 
     } else if err != nil {
 
-        log.Fatal("Error starting server: %s\n", err)
+        log.Fatal("Error starting server: %s", err)
     }
 }

@@ -166,3 +166,8 @@ handle_reset:
     csrw mepc, t0
     mret
 
+    .weak _fini
+    .weak _init
+
+_fini:
+_init: ret

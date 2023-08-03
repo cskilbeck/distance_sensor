@@ -18,7 +18,12 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#define DEBUG
+
+#if defined(DEBUG)
 #include <stdio.h>
+#endif
+
 #include <memory.h>
 
 #include <ch32v00x.h>
@@ -44,6 +49,18 @@
 
 #define PWR_AWUEN 0x02
 
+#if defined(DEBUG)
+#define debug printf
+#else
+#define debug(...) do {} while (false)
+#endif
+
+#if defined(DEBUG)
+#define SLEEP_DELAY_TICKS 10000
+#else
+#define SLEEP_DELAY_TICKS 0
+#endif
+
 //////////////////////////////////////////////////////////////////////
 
 namespace
@@ -58,12 +75,15 @@ namespace
         state_reading,
         state_wait_for_esp,
         state_esp,
+        state_done,
         state_num
     };
 
+#if defined(DEBUG)
     char const *state_name[state_num] = {
-    "boot", "reading", "wait_for_esp", "esp"
+    "boot", "reading", "wait_for_esp", "esp", "done"
     };
+#endif
 
     //////////////////////////////////////////////////////////////////////
     // status of a system (spi, vbat adc etc)
@@ -119,7 +139,6 @@ namespace
     extern "C"
     {
         void TIM1_CC_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
-        void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
         void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
         void ADC1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
         void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast"))) __attribute__((used));
@@ -141,6 +160,10 @@ namespace
 
     volatile uint32 ticks;
 
+    // buffer is twice the size - 1st half of tx and second half of rx are discarded
+    // because ch32 spi is in full duplex mode but esp12 can't seem to do that, it
+    // sends then receives the packet sequentially
+
     uint8 spi_tx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
     uint8 spi_rx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
 
@@ -151,13 +174,9 @@ namespace
 
     volatile uint16 vbat_reading;
 
-    volatile uint8 char_received;
-
     uint32 got_readings = 0;
 
     stopwatch_t distance_timer;
-
-    bool factory_reset = false;
 
     int standby_boot = 0;
 
@@ -165,14 +184,14 @@ namespace
 
     uint32 state_elapsed_ticks()
     {
-        return static_cast<uint32>(static_cast<int32>(ticks - state_start_ticks));
+        return static_cast<uint32>(static_cast<int32>(ticks) - state_start_ticks);
     }
 
     //////////////////////////////////////////////////////////////////////
 
     void set_state(state_t new_state)
     {
-        printf("set_state [%s] (%d) after %d ticks\n", state_name[new_state], new_state, state_elapsed_ticks());
+        debug("set_state [%s] (%d) after %d ticks\n", state_name[new_state], new_state, state_elapsed_ticks());
         state_start_ticks = ticks;
         state = new_state;
     }
@@ -181,8 +200,8 @@ namespace
     // sleep for some amount of time
     //
     // 61440 / 128000 = 0.48 seconds per tick
-    // 63 ticks per loop = 30.24 seconds and then with the loop overhead measured at ~30.6 seconds
-    // so to wait for 4 hours, loop count of 470 is about right
+    // 63(64?) ticks per loop = 30.24(30.72?) seconds - measured w/PPK at ~30.6 seconds (loop overhead?)
+    // so to wait for 6 hours, loop count of 705 is about right (seems to be ~14..15 seconds shy)
     // the 128kHz LSI clock is probably not that accurate anyway...
     //
     // button wakes it up, hold for > N seconds to set factory_reset flag
@@ -275,34 +294,17 @@ namespace
         SysTick->CNT = 0;
         SysTick->CTLR = SYSTICK_CTLR_ENABLE | SYSTICK_CTLR_HCLK | SYSTICK_CTLR_AUTORE;
 
-        // debounce button and if button held for >5 seconds, set factory_reset flag
-        factory_reset = false;
-        uint32 button_held_ticks = 0;
-        uint32 tick = 0;
-        while(tick < 10) {
-            if((SysTick->SR & SYSTICK_SR_CNTIF) != 0) {
-                SysTick->SR = 0;
-                tick += 1;
-                if(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON) == 0) {
-                    tick = 0;
-                    ++button_held_ticks;
-                    if(button_held_ticks == 5000) {
-                        factory_reset = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // reinit System Clock to 48MHz HSI
-        SystemInit();
+        SystemInit();        // reinit System Clock to 48MHz HSI
 
         __enable_irq();
 
         standby_boot += 1;
 
         init_peripherals();
-        state_start_ticks = ticks;
+
+        button.pressed = 0;
+        button.released = 0;
+
         set_state(state_boot);
     }
 
@@ -333,8 +335,8 @@ namespace
 
     extern "C" void ADC1_IRQHandler(void)
     {
-        ADC_ClearITPendingBit(ADC1, ADC_IT_EOC);
-        vbat_reading = ADC_GetConversionValue(ADC1);
+        ADC1->STATR = ~ADC_EOC;
+        vbat_reading = (uint16_t)ADC1->RDATAR;
         GPIO_Clear(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
         vbat_status = status_complete;
     }
@@ -352,25 +354,18 @@ namespace
 
     //////////////////////////////////////////////////////////////////////
 
-    extern "C" void USART1_IRQHandler(void)
-    {
-        char_received = USART1->DATAR;
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
     void DMA1_Channel2_IRQHandler(void)
     {
-        DMA_ClearFlag(DMA1_FLAG_TC2);
+        DMA1->INTFCR = DMA1_FLAG_TC2;
     }
 
     //////////////////////////////////////////////////////////////////////
 
     void DMA1_Channel3_IRQHandler(void)
     {
-        DMA_ClearFlag(DMA1_FLAG_TC3);
-        spi_start();
         spi_status = status_complete;
+        DMA1->INTFCR = DMA1_FLAG_TC3;
+        spi_start();
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -380,8 +375,7 @@ namespace
     {
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOD | RCC_APB2Periph_USART1 | RCC_APB2Periph_AFIO;
 
-        GPIO_Setup(GPIO_PORT_TX, GPIO_PIN_TX, GPIO_OUT_AF_PP_50MHZ);
-        GPIO_Setup(GPIO_PORT_RX, GPIO_PIN_RX, GPIO_IN_FLOATING);
+        GPIO_Setup(GPIO_PORT_TX, GPIO_PIN_TX, GPIO_OUT_AF_PP_10MHZ);
 
         {
             USART_InitTypeDef USART_InitStructure;
@@ -390,12 +384,9 @@ namespace
             USART_InitStructure.USART_StopBits = USART_StopBits_1;
             USART_InitStructure.USART_Parity = USART_Parity_No;
             USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-            USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+            USART_InitStructure.USART_Mode = USART_Mode_Tx;
             USART_Init(USART1, &USART_InitStructure);
         }
-
-        USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
-        NVIC_EnableIRQ(USART1_IRQn);
 
         USART1->CTLR1 |= USART_CTLR1_UE;
     }
@@ -598,6 +589,9 @@ namespace
 
     void init_spi(void)
     {
+        RCC->APB2PRSTR |= RCC_SPI1RST;
+        RCC->APB2PRSTR &= ~RCC_SPI1RST;
+
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC | RCC_APB2Periph_SPI1 | RCC_APB2Periph_AFIO;
         RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
 
@@ -625,8 +619,8 @@ namespace
 
         {
             DMA_InitTypeDef dma_rx;
-            dma_rx.DMA_PeripheralBaseAddr = (uint32)(&SPI1->DATAR);
-            dma_rx.DMA_MemoryBaseAddr = (uint32)spi_rx_data;
+            dma_rx.DMA_PeripheralBaseAddr = reinterpret_cast<uint32>(&SPI1->DATAR);
+            dma_rx.DMA_MemoryBaseAddr = reinterpret_cast<uint32>(spi_rx_data);
             dma_rx.DMA_DIR = DMA_DIR_PeripheralSRC;
             dma_rx.DMA_BufferSize = SPI_DATA_SIZE * 2;
             dma_rx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
@@ -641,8 +635,8 @@ namespace
 
         {
             DMA_InitTypeDef dma_tx;
-            dma_tx.DMA_PeripheralBaseAddr = (uint32)(&SPI1->DATAR);
-            dma_tx.DMA_MemoryBaseAddr = (uint32)spi_tx_data;
+            dma_tx.DMA_PeripheralBaseAddr = reinterpret_cast<uint32>(&SPI1->DATAR);
+            dma_tx.DMA_MemoryBaseAddr = reinterpret_cast<uint32>(spi_tx_data);
             dma_tx.DMA_DIR = DMA_DIR_PeripheralDST;
             dma_tx.DMA_BufferSize = SPI_DATA_SIZE * 2;
             dma_tx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
@@ -669,19 +663,23 @@ namespace
     }
 
     //////////////////////////////////////////////////////////////////////
+    // order here is important:
+    // disable SPI, disable DMA, setup DMA, enable SPI, enable DMA
 
     void spi_start()
     {
         SPI1->CTLR1 &= ~SPI_CTLR1_SPE;
         DMA1_Channel2->CFGR &= ~DMA_CFGR1_EN;
         DMA1_Channel3->CFGR &= ~DMA_CFGR1_EN;
-        DMA1_Channel2->MADDR = (uint32)spi_rx_data;
-        DMA1_Channel3->MADDR = (uint32)spi_tx_data;
+
+        DMA1_Channel2->MADDR = reinterpret_cast<uint32>(spi_rx_data);
+        DMA1_Channel3->MADDR = reinterpret_cast<uint32>(spi_tx_data);
         DMA1_Channel2->CNTR = SPI_DATA_SIZE * 2;
         DMA1_Channel3->CNTR = SPI_DATA_SIZE * 2;
+
+        SPI1->CTLR1 |= SPI_CTLR1_SPE;    // NOTE: you must enable the SPI before the DMA otherwise you get spurious bytes!
         DMA1_Channel2->CFGR |= DMA_CFGR1_EN;
         DMA1_Channel3->CFGR |= DMA_CFGR1_EN;
-        SPI1->CTLR1 |= SPI_CTLR1_SPE;
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -709,9 +707,13 @@ namespace
 
     void init_peripherals()
     {
+        // clear the RCC reset flag
         RCC->RSTSCKR |= RCC_RMVF;
+
+        // clear and enable all pending RCC irqs
         RCC->INTR = 0xffff;
 
+        // reset the peripherals on apb1, apb2
         uint32 apb1_reset = RCC_TIM2RST | RCC_TIM3RST | RCC_WWDGRST | RCC_I2C1RST;
         uint32 apb2_reset = RCC_AFIORST | RCC_IOPARST | RCC_IOPBRST | RCC_IOPCRST | RCC_IOPDRST | RCC_ADC1RST
                         | RCC_TIM1RST
@@ -736,12 +738,10 @@ namespace
         GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_PULLUP_DOWN);
         GPIO_SetPullDown(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
 
-        distance_timer.reset();
-
         // switch on VBAT_SNS
         GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
 
-        // don't switch on the 5V rail for level shifter, distance sensor yet
+        // don't switch on the 5V rail for level shifter & distance sensor yet
         GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
 
         // don't switch on ESP12 yet
@@ -750,13 +750,13 @@ namespace
         // LED off to start with
         GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
 
-        printf("\n\nSysClk:%d (boot %d)\n", SystemCoreClock, standby_boot);
+        debug("\n\nSysClk:%d (boot %d)\n", SystemCoreClock, standby_boot);
     }
 }
 
 //////////////////////////////////////////////////////////////////////
 
-extern "C" int user_main(void)
+extern "C" int main()
 {
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
@@ -766,13 +766,22 @@ extern "C" int user_main(void)
 
     while(true) {
 
+        ch32_reading_payload_t *payload = outbound_payload<ch32_reading_payload_t>();
+
         switch(state)
         {
             ////////////////////////////////////////
 
             case state_boot:
             {
-                if(state_elapsed_ticks() > 2) {
+                payload->flags &= ~ch32_flag_factory_reset;
+
+                if(button.held && state_elapsed_ticks() >= 5000) {
+
+                    payload->flags |= ch32_flag_factory_reset;
+                }
+
+                if((!button.held || (payload->flags & ch32_flag_factory_reset) != 0) && state_elapsed_ticks() > 10) {
 
                     // kick off vbat read
                     vbat_status = status_in_progress;
@@ -798,13 +807,9 @@ extern "C" int user_main(void)
 
             case state_reading:
             {
-                ch32_reading_payload_t *payload = outbound_payload<ch32_reading_payload_t>();
-
                 uint32 elapsed = state_elapsed_ticks();
 
-                payload->flags &= ~ch32_flag_factory_reset;
-                if(factory_reset) {
-                    payload->flags |= ch32_flag_factory_reset;
+                if((payload->flags & ch32_flag_factory_reset) != 0) {
                     if(elapsed < 1000 || button.held) {
                         GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (elapsed >> 6) & 1);
                         break;
@@ -818,7 +823,7 @@ extern "C" int user_main(void)
 
                     // stuff it into the SPI payload
                     payload->vbat = vbat_reading;
-                    printf("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
+                    debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
                     vbat_status = status_idle;
                     got_readings |= reading_vbat;
                 }
@@ -826,7 +831,7 @@ extern "C" int user_main(void)
                 // if we're ready to kick off another distance reading
                 if(distance_status == status_idle) {
 
-                    if(distance_timer.elapsed() > 10) {
+                    if(distance_timer.elapsed() > 2) {
 
                         distance_status = status_in_progress;
                         TIM_Cmd(TIM2, ENABLE);
@@ -834,7 +839,7 @@ extern "C" int user_main(void)
 
                 } else if(distance_status == status_complete) {
 
-                    printf("DISTANCE[%d] = %d [0x%04x]\n", num_distance_readings, distance_value, distance_value);
+                    debug("DISTANCE[%d] = %d [0x%04x]\n", num_distance_readings, distance_value, distance_value);
 
                     num_distance_readings += 1;
 
@@ -851,12 +856,22 @@ extern "C" int user_main(void)
                     } else {
 
                         payload->distance = 0;
+                        payload->flags |= ch32_flag_error_distance_invalid;
                         got_readings |= reading_distance;
                     }
                 }
 
-                // got VBAT and distance readings?
-                if(got_readings == reading_all) {
+                // got VBAT and distance readings (or timed out)
+                if(got_readings == reading_all || state_elapsed_ticks() > 1000) {
+
+                    if((got_readings & reading_vbat) == 0) {
+                        debug("Huh? no vbat reading...\n");
+                        payload->flags |= ch32_flag_error_reading_vbat;
+                    }
+                    if((got_readings & reading_distance) == 0) {
+                        debug("Huh? no distance reading...\n");
+                        payload->flags |= ch32_flag_error_reading_distance;
+                    }
 
                     // switch off the blasted led for sure
                     GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
@@ -867,12 +882,6 @@ extern "C" int user_main(void)
                     // switch on ESP, start listening for it on SPI_CS
                     GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
                     set_state(state_wait_for_esp);
-                }
-
-                // timeout on the readings... what to do?
-                if(state_elapsed_ticks() > 3000) {
-                    printf("Where's the readings?\n");
-                    NVIC_SystemReset();
                 }
             }
             break;
@@ -898,49 +907,81 @@ extern "C" int user_main(void)
             {
                 // SPI transaction completed
                 if(spi_status == status_complete) {
+
                     spi_status = status_idle;
 
-                    message_t const *msg = reinterpret_cast<message_t const *>(spi_rx_data);
-                    bool ok = check_crc32(msg);
+                    message_t const *rx_msg = reinterpret_cast<message_t const *>(spi_rx_data);
 
-                    esp_status_payload_t const *status = reinterpret_cast<esp_status_payload_t const *>(&msg->body.payload);
+                    ch32_reading_payload_t *tx_data = outbound_payload<ch32_reading_payload_t>();
 
-                    if((status->flags & esp_status_spi_error) != 0) {
-                        printf("SPI ERROR! Resetting SPI\n");
+                    esp_status_payload_t const *rx_data = reinterpret_cast<esp_status_payload_t const *>(&rx_msg->body.payload);
+
+                    bool ch32_ok = check_crc32(rx_msg);
+                    bool esp_ok = (rx_data->flags & esp_status_spi_error) == 0;
+
+                    if(!ch32_ok) {
+                        debug("RECV SPI ERROR! Resetting SPI (got %08x, expected %08x) ID %02x, LEN %02x\n",
+                                        rx_msg->crc, calc_crc32(reinterpret_cast<uint8_t const *>(&rx_msg->body), sizeof(message_body_t)),
+                                        rx_msg->body.ident, rx_msg->body.length);
+                    }
+
+                    if(!esp_ok) {
+                        debug("SEND SPI ERROR! Resetting SPI\n");
+                    }
+
+                    if(!(ch32_ok && esp_ok)) {
+
                         init_spi();
                         spi_start();
-                    }
 
-                    if((status->flags & (esp_status_send_error | esp_status_sent_reading)) != 0) {
-                        printf("ESP done, switch off/sleep etc...\n");
-                        flush_printf();
-                        sleep(705);    // should be about 6 hours
-                    }
+                    } else {
 
-                    if(state_elapsed_ticks() < 5000) {
-                        printf("SPI (%d) ", ok);
-                        for(int i=0; i<SPI_DATA_SIZE; ++i) {
-                            printf("%02x", spi_rx_data[i]);
+                        debug("SPI OK\n");
+
+                        if((rx_data->flags & esp_status_factory_resetting) != 0) {
+
+                            tx_data->flags &= ~ch32_flag_factory_reset;
+                            init_message<ch32_reading_payload_t>(outbound_message());
                         }
-                        printf("\n");
+
+                        if((rx_data->flags & (esp_status_wifi_timeout | esp_status_sent_reading | esp_status_send_error)) != 0) {
+
+                            debug("ESP done: %04x\n", rx_data->flags);
+                            flush_printf();
+                            set_state(state_done);
+                        }
                     }
                 }
+            }
+            break;
 
-                // @DEBUG button puts it to sleep for ~30 seconds
+            ////////////////////////////////////////
 
-                if(button.pressed) {
-                    while(button.held) {
-                    }
-                    printf("Sleeping...\n");
+            case state_done:
+            {
+                if(state_elapsed_ticks() > SLEEP_DELAY_TICKS) {
+
+                    debug("DONE Sleeping...\n");
                     flush_printf();
-                    sleep(1);
+                    sleep(705);    // should be about 6 hours
                 }
             }
             break;
         }
 
-        if(char_received != 0) {
-            char_received = 0;
+        // @DEBUG button puts it to sleep for ~30 seconds
+
+        if(button.pressed) {
+            stopwatch_t debounce;
+            debounce.reset();
+            while(debounce.elapsed() < 10) {
+                if(button.held) {
+                    debounce.reset();
+                }
+            }
+            debug("BUTTON Sleeping...\n");
+            flush_printf();
+            sleep(1);
         }
     }
 }

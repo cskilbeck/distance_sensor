@@ -5,6 +5,7 @@ idf_component_register(
         "util.cpp"
         "wifi.cpp"
         "spi.cpp"
+        "led.cpp"
         "http_client.cpp"
     INCLUDE_DIRS
         ".")
