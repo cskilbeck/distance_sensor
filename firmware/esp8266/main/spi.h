@@ -8,7 +8,7 @@
 
 //////////////////////////////////////////////////////////////////////
 
-void init_spi();
+void spi_init();
 
 bool spi_send_now(message_t const *msg, message_t *reply);
 

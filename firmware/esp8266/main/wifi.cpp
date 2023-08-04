@@ -29,6 +29,7 @@
 #include "types.h"
 #include "crc.h"
 #include "wifi.h"
+#include "led.h"
 
 //////////////////////////////////////////////////////////////////////
 
@@ -166,6 +167,7 @@ namespace
                 SUPPRESS_POP
 
                 ESP_ERROR_CHECK(esp_wifi_connect());
+                led_set_flash_mode(led_flash_mode_t::fast, 100);
             } break;
 
             case SC_EVENT_SEND_ACK_DONE:
@@ -180,7 +182,7 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-void deinit_wifi()
+void wifi_deinit()
 {
     ESP_LOGI(TAG, "de-init");
 
@@ -190,7 +192,7 @@ void deinit_wifi()
 
 //////////////////////////////////////////////////////////////////////
 
-void init_wifi()
+void wifi_init()
 {
     ESP_LOGI(TAG, "init");
 
@@ -212,6 +214,7 @@ void init_wifi()
 
     if(saved_config.ap.ssid[0] == 0 || saved_config.ap.password[0] == 0) {
         ESP_LOGI(TAG, "NO SAVED WIFI CONFIG!");
+        led_set_flash_mode(led_flash_mode_t::slow, 30000);
     }
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));

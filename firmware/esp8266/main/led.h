@@ -6,42 +6,17 @@
 
 //////////////////////////////////////////////////////////////////////
 
-uint32 constexpr GPIO_Pin_LED = GPIO_Pin_4;
+enum led_flash_mode_t
+{
+    off = 0,
+    slow = 1,
+    medium = 2,
+    fast = 3
+};
 
-void init_led();
+static constexpr uint32 num_flash_modes = 4;
 
 //////////////////////////////////////////////////////////////////////
 
-inline void led_on()
-{
-    GPIO.out_w1tc |= GPIO_Pin_LED;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-inline void led_off()
-{
-    GPIO.out_w1ts |= GPIO_Pin_LED;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-inline void led_set(bool on_or_off)
-{
-    if(on_or_off) {
-        led_on();
-    } else {
-        led_off();
-    }
-}
-
-//////////////////////////////////////////////////////////////////////
-
-inline void led_toggle()
-{
-    if((GPIO.out & GPIO_Pin_LED) != 0) {
-        led_on();
-    } else {
-        led_off();
-    }
-}
+void led_init();
+void led_set_flash_mode(led_flash_mode_t mode, uint32 timeout);

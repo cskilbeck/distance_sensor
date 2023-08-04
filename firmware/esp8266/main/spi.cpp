@@ -78,7 +78,7 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-void init_spi()
+void spi_init()
 {
     ESP_LOGI(TAG, "init_spi");
 

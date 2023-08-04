@@ -10,7 +10,7 @@
 // x    Handshake ESP/CH32 boot via MOSI? But.. janky current thing is working...
 // x    Make server thing a service
 // x    Measure power consumption
-// !    Factory reset (long button press)
+// x    Factory reset (long button press)
 //      Status/history web page
 //      Alexa notification
 //      Email notification
@@ -56,7 +56,7 @@
 #endif
 
 #if defined(DEBUG)
-#define SLEEP_DELAY_TICKS 10000
+#define SLEEP_DELAY_TICKS 100
 #else
 #define SLEEP_DELAY_TICKS 0
 #endif
@@ -935,8 +935,6 @@ extern "C" int main()
                         spi_start();
 
                     } else {
-
-                        debug("SPI OK\n");
 
                         if((rx_data->flags & esp_status_factory_resetting) != 0) {
 

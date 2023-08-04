@@ -42,15 +42,15 @@ namespace
     char const *server_port = "5002";
     char const *server_path = "reading";
 
+    constexpr int http_retries = 2;
+
     // for notifying main task about all the things
 
     EventGroupHandle_t main_event_bits;
 
     constexpr uint32 main_wifi_connected = BIT0;
     constexpr uint32 main_wifi_disconnected = BIT1;
-
-    constexpr uint32 main_bit_count = 2;
-    constexpr uint32 main_bit_mask = (1 << main_bit_count) - 1;
+    constexpr uint32 main_bit_mask = BIT0 | BIT1;
 
     // spi message from ch32
 
@@ -67,8 +67,8 @@ namespace
 
     void wifi_connected_callback()
     {
-        ESP_LOGI(TAG, "WIFI CONNECTED!");
         xEventGroupSetBits(main_event_bits, main_wifi_connected);
+        ESP_LOGI(TAG, "WIFI CONNECTED!");
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -78,13 +78,6 @@ namespace
         ESP_LOGI(TAG, "WIFI DISCONNECTED!");
         xEventGroupSetBits(main_event_bits, main_wifi_disconnected);
     }
-
-    //////////////////////////////////////////////////////////////////////
-
-    // void led_timer_callback(TimerHandle_t timer)
-    // {
-    //     led_off();
-    // }
 
 }    // namespace
 
@@ -111,11 +104,8 @@ extern "C" void app_main()
     sprintf(mac_addr, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "MAC ADDRESS: %s", mac_addr);
 
-    init_led();
-
-    // setup the spi hardware
-
-    init_spi();
+    led_init();
+    spi_init();
 
     // give CH32 ~1/50th of a second to get SPI slave ready
     vTaskDelay(2);
@@ -130,19 +120,18 @@ extern "C" void app_main()
     on_wifi_disconnected = wifi_disconnected_callback;
 
     ESP_ERROR_CHECK(nvs_flash_init());
-    init_wifi();
+    wifi_init();
 
     status->flags = esp_status_booted;
-
-    // TimerHandle_t led_timer;
-    // xTimerCreate("led_timer", pdMS_TO_TICKS(10), pdFALSE, &led_timer, led_timer_callback);
 
     TickType_t tick_start = xTaskGetTickCount();
 
     while(true) {
 
+        // do the SPI transaction
         if(!spi_send_msg_now<esp_status_payload_t>(&status_msg, &spi_msg_received) || spi_msg_received.body.ident != msg_id_ch32_readings) {
 
+            // if SPI error, report and wait for 1/2 a second
             ESP_LOGE(TAG, "Expected ID %d, got ID %d, expected CRC %08x, got CRC %08x", msg_id_ch32_readings, spi_msg_received.body.ident,
                      calc_crc32(reinterpret_cast<uint8_t const *>(&spi_msg_received.body), sizeof(message_body_t)), spi_msg_received.crc);
             status->flags |= esp_status_spi_error;
@@ -151,24 +140,24 @@ extern "C" void app_main()
 
         } else {
 
-            ESP_LOGI(TAG, "SPI OK");
-
             status->flags &= ~esp_status_spi_error;
 
             ch32_reading_payload_t const *payload = reinterpret_cast<ch32_reading_payload_t const *>(&spi_msg_received.body.payload);
 
+            // if factory reset requested
             if((payload->flags & ch32_flag_factory_reset) != 0) {
 
+                // notify ch32 that we will factory reset
+                status->flags |= esp_status_factory_resetting;
+
+            } else {
+
+                // factory reset was requested, ch32 has cleared its factory reset flag so... do it
                 if((status->flags & esp_status_factory_resetting) != 0) {
 
-                    ESP_LOGI(TAG, "ALREADY doing factory reset...");
-
-                } else {
-
+                    // murder wifi settings and reboot
                     ESP_LOGI(TAG, "Factory reset baby!");
-
-                    status->flags |= esp_status_factory_resetting;
-                    status->flags &= ~esp_status_connected;
+                    fflush(stdout);
 
                     esp_wifi_restore();
 
@@ -176,60 +165,56 @@ extern "C" void app_main()
                     esp_wifi_set_auto_connect(false);
                     SUPPRESS_POP
 
-                    esp_wifi_stop();
-                    esp_wifi_start();
-                    tick_start = xTaskGetTickCount();
-                }
-
-            } else {
-
-                status->flags &= ~esp_status_factory_resetting;
-
-                if((status->flags & esp_status_connected) != 0 && (status->flags & (esp_status_sent_reading | esp_status_send_error)) == 0) {
-
-                    led_off();
-
-                    for(int tries = 0; tries < 2; ++tries) {
-
-                        char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s";
-
-                        static char buffer[500];
-                        sprintf(buffer, url_format, server_host, server_port, server_path, payload->vbat, payload->distance, payload->flags, mac_addr);
-
-                        if(http_get(buffer) == ESP_OK) {
-
-                            status->flags |= esp_status_sent_reading;
-                            break;
-                        }
-                        vTaskDelay(10);
-                    }
-
-                    if((status->flags & esp_status_sent_reading) == 0) {
-
-                        status->flags |= esp_status_send_error;
-                    }
+                    esp_restart();
 
                 } else {
 
-                    led_toggle();
+                    // if wifi is up and we haven't sent (or failed to send) the reading to the server
+                    if((status->flags & esp_status_connected) != 0 && (status->flags & (esp_status_sent_reading | esp_status_send_error)) == 0) {
 
-                    if((xTaskGetTickCount() - tick_start) > pdMS_TO_TICKS(30000)) {
+                        // send reading to the server
+                        for(int tries = 0; tries < http_retries; ++tries) {
 
-                        led_off();
+                            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s";
 
-                        status->flags |= esp_status_wifi_timeout;
+                            static char buffer[500];
+                            sprintf(buffer, url_format, server_host, server_port, server_path, payload->vbat, payload->distance, payload->flags, mac_addr);
+
+                            if(http_get(buffer) == ESP_OK) {
+
+                                status->flags |= esp_status_sent_reading;
+                                break;
+                            }
+                            vTaskDelay(10);
+                        }
+
+                        // notify ch32 whether that was successful (either way, it will switch us off)
+                        if((status->flags & esp_status_sent_reading) == 0) {
+
+                            status->flags |= esp_status_send_error;
+                        }
+
+                    } else {
+
+                        // if wifi connect takes > 30 seconds
+                        if((xTaskGetTickCount() - tick_start) > pdMS_TO_TICKS(30000)) {
+
+                            // notify ch32 to give up and switch us off
+                            status->flags |= esp_status_wifi_timeout;
+                        }
                     }
-                }
 
-                uint32_t bits = xEventGroupWaitBits(main_event_bits, main_bit_mask, true, false, 100);
+                    // monitor wifi status at 10Hz
+                    uint32_t bits = xEventGroupWaitBits(main_event_bits, main_bit_mask, true, false, 100);
 
-                if((bits & main_wifi_connected) != 0) {
+                    if((bits & main_wifi_connected) != 0) {
 
-                    status->flags |= esp_status_connected;
+                        status->flags |= esp_status_connected;
 
-                } else if((bits & main_wifi_disconnected) != 0) {
+                    } else if((bits & main_wifi_disconnected) != 0) {
 
-                    status->flags &= ~esp_status_connected;
+                        status->flags &= ~esp_status_connected;
+                    }
                 }
             }
         }
