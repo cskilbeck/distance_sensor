@@ -62,18 +62,18 @@ struct esp_status_payload_t
 
 static constexpr uint32_t esp_status_booted = 1 << 0;
 static constexpr uint32_t esp_status_connected = 1 << 1;
-static constexpr uint32_t esp_status_got_reading = 1 << 2;
-static constexpr uint32_t esp_status_sent_reading = 1 << 3;
-static constexpr uint32_t esp_status_send_error = 1 << 4;
-static constexpr uint32_t esp_status_spi_error = 1 << 5;
-static constexpr uint32_t esp_status_wifi_reset = 1 << 6;
-static constexpr uint32_t esp_status_wifi_timeout = 1 << 7;
-static constexpr uint32_t esp_status_factory_resetting = 1 << 8;
-static constexpr uint32_t esp_status_done = 1 << 9;
+static constexpr uint32_t esp_status_sent_reading = 1 << 2;
+static constexpr uint32_t esp_status_send_error = 1 << 3;
+static constexpr uint32_t esp_status_spi_error = 1 << 4;
+static constexpr uint32_t esp_status_wifi_timeout = 1 << 5;
+static constexpr uint32_t esp_status_factory_resetting = 1 << 6;
+
+static constexpr uint32_t esp_status_done = esp_status_wifi_timeout | esp_status_sent_reading | esp_status_send_error;
 
 //////////////////////////////////////////////////////////////////////
 
 uint32_t calc_crc32(uint8_t const *buf, uint32_t len, uint32_t crc = 0xffffffff);
+uint32_t calc_msg_crc(message_t const *msg);
 
 bool check_crc32(message_t const *msg);
 

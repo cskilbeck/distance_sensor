@@ -8,13 +8,14 @@
 // x    CH32 Sleep/standby for N minutes
 // x    Button wakeup
 // x    Handshake ESP/CH32 boot via MOSI? But.. janky current thing is working...
-// x    Make server thing a service
 // x    Measure power consumption
 // x    Factory reset (long button press)
-//      Status/history web page
+// !    B2B Connector
 //      Alexa notification
 //      Email notification
-//      OTA ESP firmware update? Why tho? Can't update CH32...
+//      Enclosure
+//
+//      Status/history web page (Go templates + FastCGI) (Grafana?)
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -58,15 +59,14 @@
 #if defined(DEBUG)
 #define SLEEP_DELAY_TICKS 100
 #else
-#define SLEEP_DELAY_TICKS 0
+#define SLEEP_DELAY_TICKS 1
 #endif
 
 //////////////////////////////////////////////////////////////////////
 
 namespace
 {
-    static constexpr int MIN_VALID_DISTANCE = 50;
-    static constexpr int MAX_VALID_DISTANCE = 700;
+    static constexpr int MAX_VALID_DISTANCE = 7000;
     static constexpr int MAX_DISTANCE_TRIES = 5;
 
     enum state_t
@@ -80,8 +80,13 @@ namespace
     };
 
 #if defined(DEBUG)
-    char const *state_name[state_num] = {
-    "boot", "reading", "wait_for_esp", "esp", "done"
+    char const *state_name[state_num] =
+    {
+                    "boot",
+                    "reading",
+                    "wait_for_esp",
+                    "esp",
+                    "done"
     };
 #endif
 
@@ -99,10 +104,11 @@ namespace
     // what readings have been got so far
 
     enum readings_t
+        : uint32
     {
-        reading_vbat = 1,
-        reading_distance = 2,
-        reading_all = 3
+        got_reading_vbat = 1,
+        got_reading_distance = 2,
+        got_reading_all = 3
     };
 
     //////////////////////////////////////////////////////////////////////
@@ -151,32 +157,54 @@ namespace
 
     //////////////////////////////////////////////////////////////////////
 
+    // main system state
+
     state_t state = state_boot;
     uint32 state_start_ticks;
+
+    // status of some peripheral handlers
 
     volatile status_t vbat_status = status_idle;
     volatile status_t spi_status = status_idle;
     volatile status_t distance_status = status_idle;
 
+    // systicks
+
     volatile uint32 ticks;
 
-    // buffer is twice the size - 1st half of tx and second half of rx are discarded
+    // SPI buffers are double size - 1st half of tx and second half of rx are discarded
     // because ch32 spi is in full duplex mode but esp12 can't seem to do that, it
     // sends then receives the packet sequentially
 
     uint8 spi_tx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
     uint8 spi_rx_data[SPI_DATA_SIZE * 2] __attribute__ ((aligned(4)));
 
+    // NOTE spi data transactions are guaranteed to happen at <= 10Hz
+    // so no need to copy the buffers, use in place if we're quick about it
+
+    message_t &tx_msg = *reinterpret_cast<message_t * const >(spi_tx_data + SPI_DATA_SIZE);
+    message_t const &rx_msg = *reinterpret_cast<message_t const * const >(spi_rx_data);
+
+    ch32_reading_payload_t &payload = *reinterpret_cast<ch32_reading_payload_t *>(tx_msg.body.payload);
+    esp_status_payload_t const &rx_payload = *reinterpret_cast<esp_status_payload_t const *>(rx_msg.body.payload);
+
+    // distance sensor admin
+
     int num_distance_readings;
     volatile uint32 distance_value;
+    stopwatch_t distance_timer;
 
-    button_t button;
+    //
 
     volatile uint16 vbat_reading;
 
+    button_t button;
+
+    // what have we read so far? (vbat, distance)
+
     uint32 got_readings = 0;
 
-    stopwatch_t distance_timer;
+    // how many boots from standby mode since power on
 
     int standby_boot = 0;
 
@@ -201,7 +229,7 @@ namespace
     //
     // 61440 / 128000 = 0.48 seconds per tick
     // 63(64?) ticks per loop = 30.24(30.72?) seconds - measured w/PPK at ~30.6 seconds (loop overhead?)
-    // so to wait for 6 hours, loop count of 705 is about right (seems to be ~14..15 seconds shy)
+    // so to wait for 6 hours, loop count of 705 is about right (seems to be ~3 to 8 seconds shy)
     // the 128kHz LSI clock is probably not that accurate anyway...
     //
     // button wakes it up, hold for > N seconds to set factory_reset flag
@@ -241,7 +269,7 @@ namespace
         // EXTI line 2 on port A (A2... right?)
         AFIO->EXTICR = GPIO_PortSourceGPIOA << GPIO_PIN_BUTTON;
 
-        // configure EXTI_Line9 (auto wakeup) and EXTI_Line1 (button) event falling triggers
+        // configure EXTI_Line9 (auto wakeup) and EXTI_Line2 (button) event falling triggers
         EXTI->INTENR = 0;
         EXTI->EVENR = EXTI_Line9 | EXTI_Line2;
         EXTI->RTENR = 0;
@@ -262,13 +290,12 @@ namespace
 
         // prepare standby mode
         PWR->CTLR = PWR_CTLR_PDDS;
-
-        // go into standby N times for some amount of time, button wakes it up
-        uint32 t = NVIC->SCTLR | PFIC_SCTLR_SLEEPDEEP | PFIC_SCTLR_WFITOWFE;
+        NVIC->SCTLR |= PFIC_SCTLR_SLEEPDEEP | PFIC_SCTLR_WFITOWFE;
 
         // 1st WFI seems to be ignored for some reason...? am I not clearing something? irq pending?
-        NVIC->SCTLR = t;
         asm volatile ("wfi");
+
+        // go into standby N times for some amount of time, button wakes it up
 
 #pragma GCC unroll 0
         for(uint32 i = count; i != 0; --i) {
@@ -305,21 +332,8 @@ namespace
         button.pressed = 0;
         button.released = 0;
 
+        state_start_ticks = 0;
         set_state(state_boot);
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
-    constexpr message_t *outbound_message()
-    {
-        return reinterpret_cast<message_t *>(spi_tx_data + SPI_DATA_SIZE);
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
-    template<typename T> constexpr T *outbound_payload()
-    {
-        return reinterpret_cast<T *>(&outbound_message()->body.payload);
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -417,6 +431,19 @@ namespace
 
     //////////////////////////////////////////////////////////////////////
 
+    void button_t::update(int state)
+    {
+        held = state;
+        history = (history << 1) | state;
+        if(history == 0x0001) {
+            pressed = 1;
+        } else if(history == 0xfffe) {
+            released = 1;
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
     void init_button()
     {
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOA;
@@ -426,21 +453,6 @@ namespace
 
         button.history = 0;
         button.flags = 0;
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
-    void button_t::update(int state)
-    {
-        uint16 h = history;
-        h = (h << 1) | state;
-        history = h;
-        held = state;
-        if(h == 0x0001) {
-            pressed = 1;
-        } else if(h == 0xfffe) {
-            released = 1;
-        }
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -540,7 +552,7 @@ namespace
         RCC_ADCCLKConfig(RCC_PCLK2_Div8);
 
         GPIO_Setup(GPIO_PORT_VBAT_SNS, GPIO_PIN_VBAT_SNS, GPIO_IN_ANALOG);
-        GPIO_Setup(GPIO_PORT_VBAT_SNS_EN, GPIO_PIN_VBAT_SNS_EN, GPIO_OUT_PP_2MHZ);
+        GPIO_Setup(GPIO_PORT_VBAT_SNS_EN, GPIO_PIN_VBAT_SNS_EN, GPIO_OUT_PP_10MHZ);
 
         {
             ADC_InitTypeDef ADC_InitStructure;
@@ -589,9 +601,6 @@ namespace
 
     void init_spi(void)
     {
-        RCC->APB2PRSTR |= RCC_SPI1RST;
-        RCC->APB2PRSTR &= ~RCC_SPI1RST;
-
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC | RCC_APB2Periph_SPI1 | RCC_APB2Periph_AFIO;
         RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
 
@@ -601,63 +610,58 @@ namespace
         GPIO_Setup(GPIO_PORT_SPI_CS, GPIO_PIN_SPI_CS, GPIO_IN_PULLUP_DOWN);
         GPIO_SetPullup(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS);
 
-        SPI_Cmd(SPI1, DISABLE);
+        SPI1->CTLR1 &= ~SPI_CTLR1_SPE;
 
-        {
-            SPI_InitTypeDef SPI_InitStructure;
-            SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
-            SPI_InitStructure.SPI_Mode = SPI_Mode_Slave;
-            SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
-            SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
-            SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;
-            SPI_InitStructure.SPI_NSS = SPI_NSS_Hard;
-            SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_2;
-            SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
-            SPI_InitStructure.SPI_CRCPolynomial = 7;
-            SPI_Init(SPI1, &SPI_InitStructure);
-        }
+        uint32 constexpr SPI_CTLR1_CLEAR_Mask = 0x00003040;
+        uint32 constexpr DMA_CFGR_CLEAR_Mask = 0xFFFF800F;
 
-        {
-            DMA_InitTypeDef dma_rx;
-            dma_rx.DMA_PeripheralBaseAddr = reinterpret_cast<uint32>(&SPI1->DATAR);
-            dma_rx.DMA_MemoryBaseAddr = reinterpret_cast<uint32>(spi_rx_data);
-            dma_rx.DMA_DIR = DMA_DIR_PeripheralSRC;
-            dma_rx.DMA_BufferSize = SPI_DATA_SIZE * 2;
-            dma_rx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-            dma_rx.DMA_MemoryInc = DMA_MemoryInc_Enable;
-            dma_rx.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-            dma_rx.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-            dma_rx.DMA_Mode = DMA_Mode_Normal;
-            dma_rx.DMA_Priority = DMA_Priority_Medium;
-            dma_rx.DMA_M2M = DMA_M2M_Disable;
-            DMA_Init(DMA1_Channel2, &dma_rx);
-        }
+        SPI1->CTLR1 = (SPI1->CTLR1 & SPI_CTLR1_CLEAR_Mask)
+                        | SPI_Direction_2Lines_FullDuplex
+                        | SPI_CPOL_High
+                        | SPI_CPHA_1Edge
+                        | SPI_NSS_Hard
+                        | SPI_BaudRatePrescaler_2
+                        | SPI_FirstBit_MSB;
 
-        {
-            DMA_InitTypeDef dma_tx;
-            dma_tx.DMA_PeripheralBaseAddr = reinterpret_cast<uint32>(&SPI1->DATAR);
-            dma_tx.DMA_MemoryBaseAddr = reinterpret_cast<uint32>(spi_tx_data);
-            dma_tx.DMA_DIR = DMA_DIR_PeripheralDST;
-            dma_tx.DMA_BufferSize = SPI_DATA_SIZE * 2;
-            dma_tx.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-            dma_tx.DMA_MemoryInc = DMA_MemoryInc_Enable;
-            dma_tx.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-            dma_tx.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-            dma_tx.DMA_Mode = DMA_Mode_Normal;
-            dma_tx.DMA_Priority = DMA_Priority_High;
-            dma_tx.DMA_M2M = DMA_M2M_Disable;
-            DMA_Init(DMA1_Channel3, &dma_tx);
-        }
+        SPI1->CRCR = 7;
 
-        DMA_ClearFlag(0xffff);
+        DMA1_Channel2->CFGR = (DMA1_Channel2->CFGR & DMA_CFGR_CLEAR_Mask)
+                        | DMA_DIR_PeripheralSRC
+                        | DMA_Mode_Normal
+                        | DMA_PeripheralInc_Disable
+                        | DMA_MemoryInc_Enable
+                        | DMA_PeripheralDataSize_Byte
+                        | DMA_MemoryDataSize_Byte
+                        | DMA_Priority_Medium
+                        | DMA_M2M_Disable;
 
-        SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, ENABLE);
+        DMA1_Channel2->CNTR = SPI_DATA_SIZE * 2;
+        DMA1_Channel2->PADDR = reinterpret_cast<uint32>(&SPI1->DATAR);
+        DMA1_Channel2->MADDR = reinterpret_cast<uint32>(spi_rx_data);
+
+        DMA1_Channel3->CFGR = (DMA1_Channel3->CFGR & DMA_CFGR_CLEAR_Mask)
+                        | DMA_DIR_PeripheralDST
+                        | DMA_Mode_Normal
+                        | DMA_PeripheralInc_Disable
+                        | DMA_MemoryInc_Enable
+                        | DMA_PeripheralDataSize_Byte
+                        | DMA_MemoryDataSize_Byte
+                        | DMA_Priority_Medium
+                        | DMA_M2M_Disable;
+
+        DMA1_Channel3->CNTR = SPI_DATA_SIZE * 2;
+        DMA1_Channel3->PADDR = reinterpret_cast<uint32>(&SPI1->DATAR);
+        DMA1_Channel3->MADDR = reinterpret_cast<uint32>(spi_tx_data);
+
+        DMA1->INTFCR = 0xffff;
+
+        SPI1->CTLR2 |= SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx;
 
         NVIC_EnableIRQ(DMA1_Channel2_IRQn);
         NVIC_EnableIRQ(DMA1_Channel3_IRQn);
 
-        DMA_ITConfig(DMA1_Channel2, DMA_IT_TC, ENABLE);
-        DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
+        DMA1_Channel2->CFGR |= DMA_IT_TC;
+        DMA1_Channel3->CFGR |= DMA_IT_TC;
 
         spi_status = status_idle;
     }
@@ -689,7 +693,7 @@ namespace
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
 
         GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
-        GPIO_Setup(GPIO_PORT_LED, GPIO_PIN_LED, GPIO_OUT_PP_2MHZ);
+        GPIO_Setup(GPIO_PORT_LED, GPIO_PIN_LED, GPIO_OUT_PP_10MHZ);
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -698,9 +702,11 @@ namespace
     {
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
 
-        GPIO_Setup(GPIO_PORT_EN_3V3, GPIO_PIN_EN_3V3, GPIO_OUT_PP_2MHZ);
-        GPIO_Setup(GPIO_PORT_5VSW, GPIO_PIN_5VSW, GPIO_OUT_PP_2MHZ);
+        GPIO_Clear(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
         GPIO_Set(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+
+        GPIO_Setup(GPIO_PORT_EN_3V3, GPIO_PIN_EN_3V3, GPIO_OUT_PP_10MHZ);
+        GPIO_Setup(GPIO_PORT_5VSW, GPIO_PIN_5VSW, GPIO_OUT_PP_10MHZ);
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -741,11 +747,11 @@ namespace
         // switch on VBAT_SNS
         GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
 
-        // don't switch on the 5V rail for level shifter & distance sensor yet
-        GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
-
         // don't switch on ESP12 yet
         GPIO_Clear(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
+
+        // don't switch on the 5V rail for level shifter, distance sensor & ESP12 yet
+        GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
 
         // LED off to start with
         GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
@@ -766,22 +772,23 @@ extern "C" int main()
 
     while(true) {
 
-        ch32_reading_payload_t *payload = outbound_payload<ch32_reading_payload_t>();
-
         switch(state)
         {
             ////////////////////////////////////////
 
             case state_boot:
             {
-                payload->flags &= ~ch32_flag_factory_reset;
+                payload.flags = 0;
 
                 if(button.held && state_elapsed_ticks() >= 5000) {
 
-                    payload->flags |= ch32_flag_factory_reset;
+                    payload.flags |= ch32_flag_factory_reset;
                 }
 
-                if((!button.held || (payload->flags & ch32_flag_factory_reset) != 0) && state_elapsed_ticks() > 10) {
+                if((!button.held || (payload.flags & ch32_flag_factory_reset) != 0) && state_elapsed_ticks() > 10) {
+
+                    payload.distance = 0;
+                    payload.vbat = 0;
 
                     // kick off vbat read
                     vbat_status = status_in_progress;
@@ -809,12 +816,16 @@ extern "C" int main()
             {
                 uint32 elapsed = state_elapsed_ticks();
 
-                if((payload->flags & ch32_flag_factory_reset) != 0) {
+                if((payload.flags & ch32_flag_factory_reset) != 0) {
+
                     if(elapsed < 1000 || button.held) {
+
                         GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (elapsed >> 6) & 1);
                         break;
                     }
+
                 } else if(state_elapsed_ticks() > 2) {
+
                     GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
                 }
 
@@ -822,10 +833,10 @@ extern "C" int main()
                 if(vbat_status == status_complete) {
 
                     // stuff it into the SPI payload
-                    payload->vbat = vbat_reading;
+                    payload.vbat = vbat_reading;
                     debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
                     vbat_status = status_idle;
-                    got_readings |= reading_vbat;
+                    got_readings |= got_reading_vbat;
                 }
 
                 // if we're ready to kick off another distance reading
@@ -843,10 +854,10 @@ extern "C" int main()
 
                     num_distance_readings += 1;
 
-                    if(MIN_VALID_DISTANCE <= distance_value && distance_value <= MAX_VALID_DISTANCE) {
+                    if(distance_value <= MAX_VALID_DISTANCE) {
 
-                        payload->distance = distance_value;
-                        got_readings |= reading_distance;
+                        payload.distance = distance_value;
+                        got_readings |= got_reading_distance;
 
                     } else if(num_distance_readings < MAX_DISTANCE_TRIES) {
 
@@ -855,29 +866,30 @@ extern "C" int main()
 
                     } else {
 
-                        payload->distance = 0;
-                        payload->flags |= ch32_flag_error_distance_invalid;
-                        got_readings |= reading_distance;
+                        payload.distance = 0;
+                        payload.flags |= ch32_flag_error_distance_invalid;
+                        got_readings |= got_reading_distance;
                     }
                 }
 
                 // got VBAT and distance readings (or timed out)
-                if(got_readings == reading_all || state_elapsed_ticks() > 1000) {
+                if(got_readings == got_reading_all || state_elapsed_ticks() > 1000) {
 
-                    if((got_readings & reading_vbat) == 0) {
+                    if((got_readings & got_reading_vbat) == 0) {
                         debug("Huh? no vbat reading...\n");
-                        payload->flags |= ch32_flag_error_reading_vbat;
+                        payload.flags |= ch32_flag_error_reading_vbat;
                     }
-                    if((got_readings & reading_distance) == 0) {
+
+                    if((got_readings & got_reading_distance) == 0) {
                         debug("Huh? no distance reading...\n");
-                        payload->flags |= ch32_flag_error_reading_distance;
+                        payload.flags |= ch32_flag_error_reading_distance;
                     }
 
                     // switch off the blasted led for sure
                     GPIO_Set(GPIO_PORT_LED, GPIO_MASK_LED);
 
                     // finalize the spi payload
-                    init_message<ch32_reading_payload_t>(outbound_message());
+                    init_message<ch32_reading_payload_t>(&tx_msg);
 
                     // switch on ESP, start listening for it on SPI_CS
                     GPIO_Set(GPIO_PORT_EN_3V3, GPIO_MASK_EN_3V3);
@@ -910,42 +922,33 @@ extern "C" int main()
 
                     spi_status = status_idle;
 
-                    message_t const *rx_msg = reinterpret_cast<message_t const *>(spi_rx_data);
-
-                    ch32_reading_payload_t *tx_data = outbound_payload<ch32_reading_payload_t>();
-
-                    esp_status_payload_t const *rx_data = reinterpret_cast<esp_status_payload_t const *>(&rx_msg->body.payload);
-
-                    bool ch32_ok = check_crc32(rx_msg);
-                    bool esp_ok = (rx_data->flags & esp_status_spi_error) == 0;
+                    bool ch32_ok = check_crc32(&rx_msg);
+                    bool esp_ok = (rx_payload.flags & esp_status_spi_error) == 0;
 
                     if(!ch32_ok) {
+
                         debug("RECV SPI ERROR! Resetting SPI (got %08x, expected %08x) ID %02x, LEN %02x\n",
-                                        rx_msg->crc, calc_crc32(reinterpret_cast<uint8_t const *>(&rx_msg->body), sizeof(message_body_t)),
-                                        rx_msg->body.ident, rx_msg->body.length);
-                    }
-
-                    if(!esp_ok) {
-                        debug("SEND SPI ERROR! Resetting SPI\n");
-                    }
-
-                    if(!(ch32_ok && esp_ok)) {
-
+                                        rx_msg.crc, calc_crc32(reinterpret_cast<uint8_t const *>(&rx_msg.body), sizeof(message_body_t)),
+                                        rx_msg.body.ident, rx_msg.body.length);
                         init_spi();
                         spi_start();
+                    }
+
+                    else if(!esp_ok) {
+
+                        debug("SEND SPI ERROR! Resetting SPI\n");
 
                     } else {
 
-                        if((rx_data->flags & esp_status_factory_resetting) != 0) {
+                        if((rx_payload.flags & esp_status_factory_resetting) != 0) {
 
-                            tx_data->flags &= ~ch32_flag_factory_reset;
-                            init_message<ch32_reading_payload_t>(outbound_message());
+                            payload.flags &= ~ch32_flag_factory_reset;
+                            init_message<ch32_reading_payload_t>(&tx_msg);
                         }
 
-                        if((rx_data->flags & (esp_status_wifi_timeout | esp_status_sent_reading | esp_status_send_error)) != 0) {
+                        if((rx_payload.flags & esp_status_done) != 0) {
 
-                            debug("ESP done: %04x\n", rx_data->flags);
-                            flush_printf();
+                            debug("ESP done: %04x\n", rx_payload.flags);
                             set_state(state_done);
                         }
                     }

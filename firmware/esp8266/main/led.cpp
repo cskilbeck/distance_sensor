@@ -27,20 +27,18 @@ namespace
         int off_ticks;
     };
 
-    TaskHandle_t led_task;
+    uint32 constexpr GPIO_Pin_LED = GPIO_Pin_4;
+
+    TaskHandle_t led_task_handle;
     QueueHandle_t led_command_queue;
 
     flash_config_t const flash_configs[num_flash_modes] = {
 
         { 0, 9 },    // OFF     on for 0.0, off for 0.9
         { 1, 9 },    // SLOW    on for 0.1, off for 0.9
-        { 1, 4 },    // MEDIUM  on for 0.2, off for 0.4
+        { 1, 4 },    // MEDIUM  on for 0.1, off for 0.4
         { 1, 1 }     // FAST    on for 0.1, off for 0.1
     };
-
-    //////////////////////////////////////////////////////////////////////
-
-    uint32 constexpr GPIO_Pin_LED = GPIO_Pin_4;
 
     //////////////////////////////////////////////////////////////////////
 
@@ -80,7 +78,7 @@ namespace
 
     //////////////////////////////////////////////////////////////////////
 
-    void led_task_function(void *)
+    void led_task(void *)
     {
         led_command_t command;
 
@@ -98,7 +96,7 @@ namespace
                 ticks = 0;
             }
 
-            if(timeout > command.timeout) {
+            if(timeout >= command.timeout) {
 
                 led_off();
                 continue;
@@ -108,6 +106,7 @@ namespace
 
             int total = flash_config.on_ticks + flash_config.off_ticks;
 
+            // ticks %= total
             while(ticks >= total) {
                 ticks -= total;
             }
@@ -125,6 +124,8 @@ namespace
 
 void led_init()
 {
+    ESP_LOGI(TAG, "led_init");
+
     led_off();
 
     gpio_config_t p4_config;
@@ -135,7 +136,7 @@ void led_init()
     p4_config.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&p4_config);
 
-    xTaskCreate(led_task_function, "led_task", 1000, null, 1, &led_task);
+    xTaskCreate(led_task, "led_task", 1000, null, 1, &led_task_handle);
 
     led_command_queue = xQueueCreate(2, sizeof(led_command_t));
 }

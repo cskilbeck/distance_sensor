@@ -24,8 +24,8 @@
 #define HSPI_CLOCK (SPI_CLOCK(1))
 #define HSPI_PIN (SPI_PIN(1))
 
-#define HSPI_W0 ((uint32_t *)(SPI_W0(1)))
-#define HSPI_W8 ((uint32_t *)(SPI_W8(1)))
+#define HSPI_W0 ((uint32 *)(SPI_W0(1)))
+#define HSPI_W8 ((uint32 *)(SPI_W8(1)))
 
 #define SPI_INTR_ENABLE() _xt_isr_unmask(1 << ETS_SPI_INUM)
 #define SPI_INTR_DISABLE() _xt_isr_mask(1 << ETS_SPI_INUM)
@@ -44,7 +44,7 @@ namespace
 {
     char const *TAG = "spi";
 
-    void hspi_transaction(uint32_t const *send, uint32_t *recv)
+    void hspi_transaction(uint32 const *send, uint32 *recv)
     {
         while(HSPI_IS_BUSY) {
         }
@@ -108,6 +108,6 @@ void spi_init()
 
 bool spi_send_now(message_t const *msg, message_t *reply)
 {
-    hspi_transaction(reinterpret_cast<uint32_t const *>(msg), reinterpret_cast<uint32_t *>(reply));
+    hspi_transaction(reinterpret_cast<uint32 const *>(msg), reinterpret_cast<uint32 *>(reply));
     return check_crc32(reply);
 }

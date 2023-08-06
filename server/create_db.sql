@@ -6,7 +6,8 @@ USE salt_sensor;
 
 CREATE TABLE devices (
         device_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-        device_name VARCHAR(12) UNIQUE NOT NULL,
+        device_address VARCHAR(12) UNIQUE NOT NULL,
+        device_name VARCHAR(64) UNIQUE,
         PRIMARY KEY(device_id)
 );
 

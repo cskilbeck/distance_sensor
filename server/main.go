@@ -174,10 +174,10 @@ func get_device_id(name string) (id int64, err error) {
 
     Debug.Printf("Get device id for %s", name)
 
-    _, err = db.Exec(`INSERT INTO devices (device_name)
+    _, err = db.Exec(`INSERT INTO devices (device_address)
                               SELECT * FROM (SELECT ?) AS tmp
                               WHERE NOT EXISTS
-                              (SELECT * FROM devices WHERE device_name=?) LIMIT 1;`, name, name)
+                              (SELECT * FROM devices WHERE device_address=?) LIMIT 1;`, name, name)
     if err != nil {
 
         Error.Printf("Device insert error %s", err)
@@ -186,7 +186,7 @@ func get_device_id(name string) (id int64, err error) {
 
     var device_id int64
 
-    if err := db.QueryRow(`SELECT device_id FROM devices WHERE device_name = ?;`, name).Scan(&device_id); err != nil {
+    if err := db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, name).Scan(&device_id); err != nil {
 
         Error.Printf("Device lookup error %s", err)
         return 0, err

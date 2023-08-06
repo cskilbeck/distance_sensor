@@ -7,13 +7,13 @@
 
 //////////////////////////////////////////////////////////////////////
 
-#define ASSERT(x)                                                                                                         \
-    do {                                                                                                                  \
-        if(!(x)) {                                                                                                        \
-            printf("\n\n**********\n\nAssertion \"%s\" failed at line %d in %s\n\n**********\n", #x, __LINE__, __FILE__); \
-            fflush(stdout);                                                                                               \
-            abort();                                                                                                      \
-        }                                                                                                                 \
+#define ASSERT(x)                                                                                                     \
+    do {                                                                                                              \
+        if(!(x)) {                                                                                                    \
+            printf("\n\n**********\n\nASSERT '%s' failed\nLINE %d\nFILE %s\n\n**********\n", #x, __LINE__, __FILE__); \
+            fflush(stdout);                                                                                           \
+            abort();                                                                                                  \
+        }                                                                                                             \
     } while(false)
 
 //////////////////////////////////////////////////////////////////////
