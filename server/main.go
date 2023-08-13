@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/julienschmidt/httprouter"
 )
 
 //////////////////////////////////////////////////////////////////////
@@ -29,6 +30,10 @@ type Response struct {
 }
 
 //////////////////////////////////////////////////////////////////////
+
+type RouteHandler = func(w http.ResponseWriter, r *http.Request, params httprouter.Params)
+
+//////////////////////////////////////////////////////////////////////
 // Database credentials
 
 type Credentials struct {
@@ -37,13 +42,28 @@ type Credentials struct {
 }
 
 //////////////////////////////////////////////////////////////////////
-// http ResponseWriter wrapper for UFCS
+// Logging admin
 
-type Responder struct {
-	writer http.ResponseWriter
+const (
+	log_level_debug int = iota
+	log_level_verbose
+	log_level_info
+	log_level_warning
+	log_level_error
+	log_level_fatal
+	num_log_levels
+)
+
+var log_level_names = [num_log_levels]string{
+	"debug",
+	"verbose",
+	"info",
+	"warning",
+	"error",
+	"fatal",
 }
 
-//////////////////////////////////////////////////////////////////////
+var log_level = log_level_info
 
 type Loggers struct {
 	Debug   *log.Logger
@@ -52,43 +72,47 @@ type Loggers struct {
 	Warning *log.Logger
 	Error   *log.Logger
 	Fatal   *log.Logger
-	None    *log.Logger
 }
-
-//////////////////////////////////////////////////////////////////////
-
-var db_credentials Credentials
-var db_DSNString string
 
 var Log Loggers
 
 //////////////////////////////////////////////////////////////////////
+// DB admin
 
-func set_log_level(log_level_name string) (e error) {
+var db_credentials Credentials
 
-	const num_log_levels = 7
+var db_DSNString string
 
-	log_names := [num_log_levels]string{
-		"debug",
-		"verbose",
-		"info",
-		"warning",
-		"error",
-		"fatal",
-		"none",
+//////////////////////////////////////////////////////////////////////
+
+func LongestStringLength(s []string) int {
+
+	longest := 0
+	for _, str := range s {
+		l := len(str)
+		if l > longest {
+			longest = l
+		}
 	}
+	return longest
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func SetLogLevel(log_level_name string) (e error) {
 
 	log_writers := [num_log_levels]io.Writer{
 		os.Stdout,
 		os.Stdout,
 		os.Stdout,
-		os.Stdout,
 		os.Stderr,
 		os.Stderr,
-		io.Discard,
+		os.Stderr,
 	}
 
-	var log_level = 2 // level is info by default
+	longest_name := LongestStringLength(log_level_names[:])
+
+	// find the log level by name if they asked for one
 
 	found := true
 
@@ -96,7 +120,7 @@ func set_log_level(log_level_name string) (e error) {
 
 		found = false
 
-		for i, name := range log_names {
+		for i, name := range log_level_names {
 
 			if strings.EqualFold(log_level_name, name) {
 
@@ -107,29 +131,39 @@ func set_log_level(log_level_name string) (e error) {
 		}
 	}
 
+	if !found {
+		return fmt.Errorf("unknown log level \"%s\"", log_level_name)
+	}
+
+	// create a logger for each log_level
+
 	var logs []*log.Logger = make([]*log.Logger, num_log_levels)
 
+	// use io.Discard for loggers below requested level
+
 	for i := 0; i < log_level; i++ {
+
 		logs[i] = log.New(io.Discard, "", 0)
 	}
 
+	// stdout or stderr for enabled levels
+
 	for i := log_level; i < num_log_levels; i++ {
-		name := strings.ToUpper(log_names[i]) + strings.Repeat(" ", 8-len(log_names[i])) + ":"
-		logs[i] = log.New(log_writers[i], name, log.Ldate|log.Ltime|log.Lmicroseconds)
+
+		name := log_level_names[i]
+		padded := name + strings.Repeat(" ", longest_name-len(name)) + ":"
+		logs[i] = log.New(log_writers[i], padded, log.Ldate|log.Ltime|log.Lmicroseconds)
 	}
 
-	Log = Loggers{}
+	// setup for use
 
-	Log.Debug = logs[0]
-	Log.Verbose = logs[1]
-	Log.Info = logs[2]
-	Log.Warning = logs[3]
-	Log.Error = logs[4]
-	Log.Fatal = logs[5]
-	Log.None = logs[6]
-
-	if !found {
-		return fmt.Errorf("unknown log level \"%s\"", log_level_name)
+	Log = Loggers{
+		Debug:   logs[log_level_debug],
+		Verbose: logs[log_level_verbose],
+		Info:    logs[log_level_info],
+		Warning: logs[log_level_warning],
+		Error:   logs[log_level_error],
+		Fatal:   logs[log_level_fatal],
 	}
 
 	return nil
@@ -137,7 +171,7 @@ func set_log_level(log_level_name string) (e error) {
 
 //////////////////////////////////////////////////////////////////////
 
-func load_credentials(credentials_filename string) error {
+func LoadCredentials(credentials_filename string) error {
 
 	if len(credentials_filename) == 0 {
 
@@ -154,49 +188,59 @@ func load_credentials(credentials_filename string) error {
 
 	if err = json.Unmarshal(content, &db_credentials); err != nil {
 
-		return fmt.Errorf("Error parsing %s: %s", credentials_filename, err)
+		return fmt.Errorf("error parsing %s: %s", credentials_filename, err)
 	}
-
-	Log.Verbose.Printf("Loaded credentials file %s", credentials_filename)
 	return nil
 }
 
 //////////////////////////////////////////////////////////////////////
+// HTTP Body is always a json Response struct
 
-func get_json(r Response) []byte {
+func Respond(w http.ResponseWriter, status int, info ...string) {
 
-	if s, err := json.MarshalIndent(r, "", "  "); err == nil {
-		return s
+	response := Response{Status: http.StatusText(status), Info: info}
+
+	var err error
+	var body []byte
+
+	if body, err = json.MarshalIndent(response, "", "  "); err != nil {
+
+		Log.Fatal.Panicf("Can't marshal json response: %s", err.Error())
 	}
 
-	return []byte(`{"huh":"say wha?"}`)
+	w.Header().Set("Content-Type", "application/json")
+
+	w.WriteHeader(status)
+
+	if _, err = w.Write(body); err != nil {
+
+		Log.Error.Printf("Can't write response: %s", err.Error())
+	}
+
+	for i, info := range response.Info {
+		Log.Debug.Printf("Info[%d] = %s", i, info)
+	}
+
+	Log.Verbose.Printf("Status: %s", response.Status)
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func (w Responder) Respond(status int, status_text string, info string, args ...any) {
+func NotFound(w http.ResponseWriter, r *http.Request) {
 
-	w.writer.WriteHeader(status)
-	w.writer.Write(get_json(Response{Status: status_text, Info: []string{fmt.Sprintf(info, args...)}}))
+	Respond(w, http.StatusNotFound)
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func (w Responder) Error(status int, info string, args ...any) {
+func MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
 
-	w.Respond(status, "error", info, args...)
+	Respond(w, http.StatusMethodNotAllowed)
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func (w Responder) OK(status int, info string, args ...any) {
-
-	w.Respond(status, "OK", info, args...)
-}
-
-//////////////////////////////////////////////////////////////////////
-
-func parse_param(name string, base int, bits int, values *url.Values) (uint64, error) {
+func ParseQueryParam(name string, base int, bits int, values *url.Values) (uint64, error) {
 
 	param := (*values)[name]
 
@@ -218,24 +262,22 @@ func parse_param(name string, base int, bits int, values *url.Values) (uint64, e
 
 //////////////////////////////////////////////////////////////////////
 
-func http_reading_handler(w http.ResponseWriter, r *http.Request) {
+func Logged(h RouteHandler) RouteHandler {
 
-	var response Responder = Responder{writer: w}
+	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-	w.Header().Set("Content-Type", "application/json")
-
-	// initial checks
-
-	if r.Method != "GET" {
-		response.Error(http.StatusMethodNotAllowed, "Method %s not allowed", r.Method)
-		return
+		Log.Debug.Printf("%s %s", r.Method, r.URL)
+		h(w, r, params)
 	}
+}
 
-	Log.Verbose.Printf("GET %s", r.URL)
+//////////////////////////////////////////////////////////////////////
 
-	// parse the query string
+func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
 	var err error
+
+	// parse the query string
 
 	var errors = make([]string, 0)
 
@@ -246,25 +288,24 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	if vbat, err = parse_param("vbat", 10, 16, &q); err != nil {
+	if vbat, err = ParseQueryParam("vbat", 10, 16, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if distance, err = parse_param("distance", 10, 16, &q); err != nil {
+	if distance, err = ParseQueryParam("distance", 10, 16, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if device, err = parse_param("device", 16, 48, &q); err != nil {
+	if device, err = ParseQueryParam("device", 16, 48, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if flags, err = parse_param("flags", 10, 16, &q); err != nil {
+	if flags, err = ParseQueryParam("flags", 10, 16, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
 	if len(errors) != 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write(get_json(Response{Status: "error", Info: errors}))
+		Respond(w, http.StatusBadRequest, errors...)
 		return
 	}
 
@@ -276,7 +317,7 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
 	db, err = sql.Open("mysql", db_DSNString)
 	if err != nil {
-		response.Error(http.StatusInternalServerError, "Error opening database: %s", err.Error())
+		Respond(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
 		return
 	}
 
@@ -284,27 +325,30 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
 	defer db.Close()
 
-	// get device id (could be a new one or an existing one)
+	// get device id or insert new device
 
 	device_address := fmt.Sprintf("%012x", device)
 
 	Log.Debug.Printf("Get device id for %s", device_address)
 
-	_, err = db.Exec(`INSERT INTO devices (device_address)
-						SELECT * FROM (SELECT ?) AS tmp
-						WHERE NOT EXISTS
-						(SELECT * FROM devices WHERE device_address=?) LIMIT 1;`, device_address, device_address)
-	if err != nil {
+	var device_id int64
+	var insert sql.Result
 
-		response.Error(http.StatusInternalServerError, "Database error adding device %s: %s", device_address, err.Error())
-		return
+	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+
+		if err == sql.ErrNoRows {
+
+			Log.Info.Printf("New device: %s", device_address)
+
+			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (?)`, device_address); err == nil {
+
+				device_id, err = insert.LastInsertId()
+			}
+		}
 	}
 
-	var device_id int64
-
-	if err := db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
-
-		response.Error(http.StatusInternalServerError, "Database error getting device_id for %s: %s", device_address, err.Error())
+	if err != nil {
+		Respond(w, http.StatusInternalServerError, "Database error adding device %s: %s", device_address, err.Error())
 		return
 	}
 
@@ -312,22 +356,16 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
 	// add the reading
 
-	res, err := db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp)
-                         VALUES (?,?,?,?,CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags)
-
-	if err != nil {
-
-		response.Error(http.StatusInternalServerError, "Error adding reading to database(1): %s", err.Error())
-		return
-	}
-
 	var reading_id int64
 
-	reading_id, err = res.LastInsertId()
+	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp)
+                         	  VALUES (?,?,?,?,CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags); err == nil {
+
+		reading_id, err = insert.LastInsertId()
+	}
 
 	if err != nil {
-
-		response.Error(http.StatusInternalServerError, "Error adding reading to database(2): %s", err.Error())
+		Respond(w, http.StatusInternalServerError, fmt.Sprintf("Database error adding reading: %s", err.Error()))
 		return
 	}
 
@@ -335,9 +373,7 @@ func http_reading_handler(w http.ResponseWriter, r *http.Request) {
 
 	// done
 
-	response.OK(http.StatusOK, "reading id %d", reading_id)
-
-	Log.Debug.Printf("OK")
+	Respond(w, http.StatusOK, fmt.Sprintf("Reading id: %d", reading_id))
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -350,18 +386,18 @@ func main() {
 	var log_level_name string
 
 	flag.StringVar(&credentials_filename, "credentials", "", "Specify credentials filename (required)")
-	flag.StringVar(&log_level_name, "log_level", "info", "Specify log level (debug|verbose|info|warning|error|fatal)")
+	flag.StringVar(&log_level_name, "log_level", log_level_names[log_level], fmt.Sprintf("Specify log level (%s)", strings.Join(log_level_names[:], "|")))
 	flag.Parse()
 
-	// check and action parameters
+	// check and action command line parameters
 
 	errs := make([]error, 0)
 
-	if err := set_log_level(log_level_name); err != nil {
+	if err := SetLogLevel(log_level_name); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := load_credentials(credentials_filename); err != nil {
+	if err := LoadCredentials(credentials_filename); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -381,11 +417,17 @@ func main() {
 		os.Exit(exit_code)
 	}
 
-	Log.Info.Printf("======= SALT SENSOR SERVICE BEGINS =======")
+	// command line OK, here we go
 
-	Log.Debug.Printf("Log level set to '%s'", log_level_name)
+	Log.Info.Println()
+	Log.Info.Printf("========== SALT SENSOR SERVICE BEGINS ==========")
+	Log.Info.Println()
+
+	Log.Debug.Printf("Log level: %s", log_level_names[log_level])
 
 	// database config
+
+	Log.Verbose.Printf("Loaded credentials file %s", credentials_filename)
 
 	cfg := mysql.Config{
 		User:                 db_credentials.Username,
@@ -396,25 +438,31 @@ func main() {
 		AllowNativePasswords: true,
 	}
 
-	Log.Debug.Printf("Database is '%s', Username is '%s'", cfg.DBName, cfg.User)
+	Log.Debug.Printf("Database is '%s'", cfg.DBName)
+	Log.Debug.Printf("Username is '%s'", cfg.User)
 
 	db_DSNString = cfg.FormatDSN()
 
 	// HTTP server
 
-	Log.Verbose.Printf("Serving HTTP...")
+	Log.Verbose.Printf("HTTP server starting")
 
-	http.HandleFunc("/reading", http_reading_handler)
+	router := httprouter.New()
 
-	err := http.ListenAndServe("0.0.0.0:5002", nil)
+	router.NotFound = http.HandlerFunc(NotFound)
+	router.MethodNotAllowed = http.HandlerFunc(MethodNotAllowed)
+
+	router.PUT("/reading", Logged(InsertReading))
+
+	err := http.ListenAndServe("0.0.0.0:5002", router)
 
 	if errors.Is(err, http.ErrServerClosed) {
 
-		Log.Verbose.Printf("Server closed")
+		Log.Verbose.Printf("HTTP server closed")
 
 	} else if err != nil {
 
-		Log.Fatal.Printf("Error starting server: %s", err)
+		Log.Fatal.Printf("Error starting HTTP server: %s", err)
 		os.Exit(1)
 	}
 }
