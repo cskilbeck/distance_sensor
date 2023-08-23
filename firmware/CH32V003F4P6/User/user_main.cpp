@@ -10,7 +10,7 @@
 // x    Handshake ESP/CH32 boot via MOSI? But.. janky current thing is working...
 // x    Measure power consumption
 // x    Factory reset (long button press)
-// !    B2B Connector
+// x    B2B Connector
 //      Alexa notification
 //      Email notification
 //      Enclosure
@@ -854,7 +854,7 @@ extern "C" int main()
 
                     num_distance_readings += 1;
 
-                    if(distance_value <= MAX_VALID_DISTANCE) {
+                    if(distance_value != 0 && distance_value <= MAX_VALID_DISTANCE) {
 
                         payload.distance = distance_value;
                         got_readings |= got_reading_distance;

@@ -14,6 +14,8 @@ namespace
 {
     char const *TAG = "http_client";
 
+    char const *HTTP_METHOD_MAPPING[] = { "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "NOTIFY", "SUBSCRIBE", "UNSUBSCRIBE", "OPTIONS" };
+
     size_t constexpr MAX_HTTP_OUTPUT_BUFFER = 1024;
 
     //////////////////////////////////////////////////////////////////////
@@ -88,11 +90,13 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-esp_err_t http_get(char const *url)
+esp_err_t http_request(esp_http_client_method_t method, char const *url)
 {
-    char const *TAG = "http_get";
+    char const *TAG = "http_request";
 
     char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER] = { 0 };
+
+    ESP_LOGI(TAG, "%s %s", HTTP_METHOD_MAPPING[method], url);
 
     esp_http_client_config_t config;
     memset(&config, 0, sizeof(config));
@@ -100,8 +104,8 @@ esp_err_t http_get(char const *url)
     config.url = url;
     config.event_handler = http_event_handler;
     config.user_data = local_response_buffer;
-    config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 500;
+    config.method = method;
+    config.timeout_ms = 1000;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_err_t err = esp_http_client_perform(client);

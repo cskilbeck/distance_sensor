@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
@@ -46,6 +47,8 @@ namespace
     constexpr uint32 main_wifi_disconnected = BIT1;
     constexpr uint32 main_wifi_bit_mask = BIT0 | BIT1;
 
+    int8 wifi_rssi;
+
     // spi message from ch32
 
     message_t spi_rx_msg;
@@ -63,6 +66,7 @@ namespace
 
     void wifi_connected_callback()
     {
+        wifi_rssi = wifi_get_rssi();
         xEventGroupSetBits(wifi_event_bits, main_wifi_connected);
         ESP_LOGI(TAG, "WIFI CONNECTED!");
     }
@@ -175,12 +179,12 @@ extern "C" void app_main()
                         // send reading to the server
                         for(int tries = 0; tries < http_retries; ++tries) {
 
-                            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s";
+                            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d";
 
-                            static char buffer[500];
-                            sprintf(buffer, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr);
+                            static char url[500];
+                            sprintf(url, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr, wifi_rssi);
 
-                            if(http_get(buffer) == ESP_OK) {
+                            if(http_request(HTTP_METHOD_GET, url) == ESP_OK) {
 
                                 status.flags |= esp_status_sent_reading;
                                 break;

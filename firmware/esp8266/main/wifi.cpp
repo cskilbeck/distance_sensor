@@ -47,6 +47,8 @@ namespace
     const int CONNECTED_BIT = BIT0;
     const int ESPTOUCH_DONE_BIT = BIT1;
 
+    wifi_ap_record_t access_point;
+
     //////////////////////////////////////////////////////////////////////
 
     void smartconfig_example_task(void *parm)
@@ -112,6 +114,7 @@ namespace
             case IP_EVENT_STA_GOT_IP:
                 xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
                 if(on_wifi_connected != null) {
+                    esp_wifi_sta_get_ap_info(&access_point);
                     on_wifi_connected();
                 }
                 break;
@@ -238,4 +241,11 @@ void wifi_init()
     if(auto_connect) {
         esp_wifi_connect();
     }
+}
+
+//////////////////////////////////////////////////////////////////////
+
+int8 wifi_get_rssi()
+{
+    return access_point.rssi;
 }

@@ -27,7 +27,7 @@ namespace
         int off_ticks;
     };
 
-    uint32 constexpr GPIO_Pin_LED = GPIO_Pin_4;
+    uint32 constexpr GPIO_Pin_LED = GPIO_Pin_5;
 
     TaskHandle_t led_task_handle;
     QueueHandle_t led_command_queue;
