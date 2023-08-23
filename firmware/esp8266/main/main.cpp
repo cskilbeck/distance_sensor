@@ -184,7 +184,7 @@ extern "C" void app_main()
                             static char url[500];
                             sprintf(url, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr, wifi_rssi);
 
-                            if(http_request(HTTP_METHOD_GET, url) == ESP_OK) {
+                            if(http_request(HTTP_METHOD_PUT, url) == ESP_OK) {
 
                                 status.flags |= esp_status_sent_reading;
                                 break;

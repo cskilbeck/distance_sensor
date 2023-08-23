@@ -16,6 +16,7 @@ CREATE TABLE readings (
         reading_vbat SMALLINT UNSIGNED NOT NULL,
         reading_distance SMALLINT UNSIGNED NOT NULL,
         reading_flags SMALLINT UNSIGNED NOT NULL,
+        reading_rssi TINYINT SIGNED NOT NULL,
         reading_timestamp TIMESTAMP NOT NULL,
         PRIMARY KEY(reading_id));
 

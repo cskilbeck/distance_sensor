@@ -228,19 +228,19 @@ func Respond(w http.ResponseWriter, status int, info ...string) {
 
 func NotFound(w http.ResponseWriter, r *http.Request) {
 
-	Respond(w, http.StatusNotFound)
+	Respond(w, http.StatusNotFound, "Not found")
 }
 
 //////////////////////////////////////////////////////////////////////
 
 func MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
 
-	Respond(w, http.StatusMethodNotAllowed)
+	Respond(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func ParseQueryParam(name string, base int, bits int, values *url.Values) (uint64, error) {
+func ParseQueryParamUnsigned(name string, base int, bits int, values *url.Values) (uint64, error) {
 
 	param := (*values)[name]
 
@@ -262,11 +262,33 @@ func ParseQueryParam(name string, base int, bits int, values *url.Values) (uint6
 
 //////////////////////////////////////////////////////////////////////
 
+func ParseQueryParamSigned(name string, base int, bits int, values *url.Values) (int64, error) {
+
+	param := (*values)[name]
+
+	if len(param) < 1 {
+		return 0, fmt.Errorf("missing parameter %s", name)
+	}
+
+	if len(param) > 1 {
+		return 0, fmt.Errorf("duplicate parameter %s", name)
+	}
+
+	v, err := strconv.ParseInt(param[0], base, bits)
+
+	if err != nil {
+		return 0, fmt.Errorf("bad value for '%s' (%s)", name, err.Error())
+	}
+	return v, nil
+}
+
+//////////////////////////////////////////////////////////////////////
+
 func Logged(h RouteHandler) RouteHandler {
 
 	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-		Log.Debug.Printf("%s %s", r.Method, r.URL)
+		Log.Verbose.Printf("%s %s", r.Method, r.URL)
 		h(w, r, params)
 	}
 }
@@ -285,22 +307,27 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 	var distance uint64
 	var device uint64
 	var flags uint64
+	var rssi int64
 
 	q := r.URL.Query()
 
-	if vbat, err = ParseQueryParam("vbat", 10, 16, &q); err != nil {
+	if vbat, err = ParseQueryParamUnsigned("vbat", 10, 16, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if distance, err = ParseQueryParam("distance", 10, 16, &q); err != nil {
+	if distance, err = ParseQueryParamUnsigned("distance", 10, 16, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if device, err = ParseQueryParam("device", 16, 48, &q); err != nil {
+	if device, err = ParseQueryParamUnsigned("device", 16, 48, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if flags, err = ParseQueryParam("flags", 10, 16, &q); err != nil {
+	if flags, err = ParseQueryParamUnsigned("flags", 10, 16, &q); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if rssi, err = ParseQueryParamSigned("rssi", 10, 8, &q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
@@ -309,14 +336,14 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 		return
 	}
 
-	Log.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x", vbat, distance, flags, device)
+	Log.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
 
 	// open the database
 
 	var db *sql.DB
 
-	db, err = sql.Open("mysql", db_DSNString)
-	if err != nil {
+	if db, err = sql.Open("mysql", db_DSNString); err != nil {
+
 		Respond(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
 		return
 	}
@@ -334,13 +361,15 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 	var device_id int64
 	var insert sql.Result
 
-	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+	v_device_address := sql.Named("device_address", device_address)
+
+	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = @device_address;`, v_device_address).Scan(&device_id); err != nil {
 
 		if err == sql.ErrNoRows {
 
 			Log.Info.Printf("New device: %s", device_address)
 
-			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (?)`, device_address); err == nil {
+			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (@device_address)`, v_device_address); err == nil {
 
 				device_id, err = insert.LastInsertId()
 			}
@@ -358,8 +387,14 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 
 	var reading_id int64
 
-	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp)
-                         	  VALUES (?,?,?,?,CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags); err == nil {
+	v_device_id := sql.Named("device_id", device_id)
+	v_vbat := sql.Named("vbat", vbat)
+	v_distance := sql.Named("distance", distance)
+	v_flags := sql.Named("flags", flags)
+	v_rssi := sql.Named("rssi", rssi)
+
+	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp, reading_rssi)
+                         	  VALUES (@device_id, @vbat, @distance, @flags, CURRENT_TIMESTAMP(), @rssi);`, v_device_id, v_vbat, v_distance, v_flags, v_rssi); err == nil {
 
 		reading_id, err = insert.LastInsertId()
 	}
