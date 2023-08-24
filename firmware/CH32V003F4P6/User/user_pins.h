@@ -18,7 +18,7 @@
 // 10   C0   OUT_PP      LED
 // 11   C1   OUT_PP      SPI_CS
 // 12   C2   OUT_PP      5VSW
-// 13   C3   OUT_PP      EN_3V3
+// 13   C3               -
 // 14   C4               -
 // 15   C5   OUT_AF_PP   SPI_CLK
 // 16   C6   OUT_AF_PP   SPI_MOSI
@@ -45,7 +45,6 @@
 #define GPIO_PIN_LED 0
 #define GPIO_PIN_SPI_CS 1
 #define GPIO_PIN_5VSW 2
-#define GPIO_PIN_EN_3V3 3
 #define GPIO_PIN_SPI_CLK 5
 #define GPIO_PIN_SPI_MOSI 6
 #define GPIO_PIN_SPI_MISO 7
@@ -53,7 +52,6 @@
 #define GPIO_MASK_LED GPIO_Pin_0
 #define GPIO_MASK_SPI_CS GPIO_Pin_1
 #define GPIO_MASK_5VSW GPIO_Pin_2
-#define GPIO_MASK_EN_3V3 GPIO_Pin_3
 #define GPIO_MASK_SPI_CLK GPIO_Pin_5
 #define GPIO_MASK_SPI_MOSI GPIO_Pin_6
 #define GPIO_MASK_SPI_MISO GPIO_Pin_7
@@ -61,7 +59,6 @@
 #define GPIO_PORT_LED GPIOC
 #define GPIO_PORT_SPI_CS GPIOC
 #define GPIO_PORT_5VSW GPIOC
-#define GPIO_PORT_EN_3V3 GPIOC
 #define GPIO_PORT_SPI_CLK GPIOC
 #define GPIO_PORT_SPI_MOSI GPIOC
 #define GPIO_PORT_SPI_MISO GPIOC

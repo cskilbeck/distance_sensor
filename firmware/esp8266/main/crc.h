@@ -1,4 +1,5 @@
 //////////////////////////////////////////////////////////////////////
+// WARNING: payload is only 16 bit aligned...
 
 #pragma once
 
@@ -49,6 +50,7 @@ static constexpr uint32_t ch32_flag_factory_reset = 1 << 0;
 static constexpr uint32_t ch32_flag_error_reading_vbat = 1 << 1;
 static constexpr uint32_t ch32_flag_error_reading_distance = 1 << 2;
 static constexpr uint32_t ch32_flag_error_distance_invalid = 1 << 3;
+static constexpr uint32_t ch32_flag_button_boot = 1 << 4;
 
 //////////////////////////////////////////////////////////////////////
 // ESP->CH32 ESP has booted/connected/sent etc
@@ -57,6 +59,7 @@ struct esp_status_payload_t
 {
     static uint8_t constexpr id = msg_id_esp_status;
 
+    uint16_t sleep_count;
     uint16_t flags;
 };
 

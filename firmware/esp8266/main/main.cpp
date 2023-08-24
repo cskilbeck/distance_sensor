@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "cJSON.h"
 
 #include "util.h"
 #include "types.h"
@@ -77,6 +78,47 @@ namespace
     {
         ESP_LOGI(TAG, "WIFI DISCONNECTED!");
         xEventGroupSetBits(wifi_event_bits, main_wifi_disconnected);
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void read_settings(char const *response_buffer)
+    {
+        status.sleep_count = 0;
+
+        cJSON *json = cJSON_Parse(response_buffer);
+
+        if(json == nullptr) {
+            ESP_LOGE(TAG, "Failed to parse response");
+
+        } else {
+
+            cJSON *settings = cJSON_GetObjectItem(json, "settings");
+
+            if(settings == nullptr) {
+                ESP_LOGE(TAG, "Can't find settings object");
+            } else {
+
+                cJSON *sleep_count = cJSON_GetObjectItem(settings, "sleep_count");
+
+                if(sleep_count == nullptr) {
+                    ESP_LOGE(TAG, "Can't find sleep_count object");
+
+                } else {
+
+                    if(sleep_count->type != cJSON_Number) {
+                        ESP_LOGE(TAG, "sleep_count is not a number");
+
+                    } else {
+
+                        ESP_LOGI(TAG, "sleep_count: %d", sleep_count->valueint);
+                        status.sleep_count = static_cast<uint16>(sleep_count->valueint);
+                    }
+                }
+            }
+
+            cJSON_Delete(json);
+        }
     }
 
 }    // namespace
@@ -181,10 +223,16 @@ extern "C" void app_main()
 
                             char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d";
 
-                            static char url[500];
+                            static char url[256];
                             sprintf(url, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr, wifi_rssi);
 
-                            if(http_request(HTTP_METHOD_PUT, url) == ESP_OK) {
+                            static char response_buffer[256];
+
+                            static size_t response_size = sizeof(response_buffer);
+
+                            if(http_request(HTTP_METHOD_PUT, url, response_buffer, &response_size) == ESP_OK) {
+
+                                read_settings(response_buffer);
 
                                 status.flags |= esp_status_sent_reading;
                                 break;

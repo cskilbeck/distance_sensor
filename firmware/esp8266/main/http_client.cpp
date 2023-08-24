@@ -90,11 +90,9 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-esp_err_t http_request(esp_http_client_method_t method, char const *url)
+esp_err_t http_request(esp_http_client_method_t method, char const *url, char *response_buffer, size_t *response_buffer_size)
 {
     char const *TAG = "http_request";
-
-    char local_response_buffer[MAX_HTTP_OUTPUT_BUFFER] = { 0 };
 
     ESP_LOGI(TAG, "%s %s", HTTP_METHOD_MAPPING[method], url);
 
@@ -103,7 +101,7 @@ esp_err_t http_request(esp_http_client_method_t method, char const *url)
 
     config.url = url;
     config.event_handler = http_event_handler;
-    config.user_data = local_response_buffer;
+    config.user_data = response_buffer;
     config.method = method;
     config.timeout_ms = 1000;
 
@@ -112,8 +110,9 @@ esp_err_t http_request(esp_http_client_method_t method, char const *url)
 
     if(err == ESP_OK) {
 
-        ESP_LOGI(TAG, "Status = %d, content_length = %d", esp_http_client_get_status_code(client), esp_http_client_get_content_length(client));
-        ESP_LOGI(TAG, "Response: %s", local_response_buffer);
+        *response_buffer_size = esp_http_client_get_content_length(client);
+        ESP_LOGI(TAG, "Status = %d, content_length = %d", esp_http_client_get_status_code(client), *response_buffer_size);
+        ESP_LOGI(TAG, "Response: %s", response_buffer);
 
     } else {
 
