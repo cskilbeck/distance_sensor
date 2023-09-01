@@ -1,0 +1,39 @@
+<!doctype html>
+<html  data-bs-theme="dark">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-4bw+/aepP/YC94hEpVNVgiZdgIC5+VKNBQNGCHeKRQN+PtmoHDEXuppvnDJzQIu9" crossorigin="anonymous">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js" integrity="sha384-HwwvtgBNo3bZJJLYd8oVXjrBZt8cqVSpeBNS5n7C8IVInixGAoxmnlMuBnhbgrkm" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="graph.js"></script>
+  <head>
+    <title>Salt Sensor Graphs</title>
+  </head>
+  <body>
+    <div class="header mx-auto p-2">
+      <div class="container text-center">
+        <h4>Salt Sensor Graphs</h4>
+      </div>
+    </div>
+    <div class="container">
+      <div class="row">
+        <div class="col mb-4">
+          <div class="d-flex justify-content-center">
+            <div class="btn-toolbar pagination-centered">
+              <div class="input-group input-group-sm w-auto">
+                <span class="input-group-text">Device</span>
+                <input type="text" class="form-control" placeholder="84f3eb536123" aria-label="Device" aria-describedby="basic-addon1">
+              </div>
+              <div class="w-auto mx-2">
+                <button class="btn btn-sm btn-primary" onclick="show_graph(0)">distance</button>
+                <button class="btn btn-sm btn-primary" onclick="show_graph(1)">battery</button>
+                <button class="btn btn-sm btn-primary" onclick="show_graph(2)">wifi</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="width: 80%;margin: auto">
+      <canvas id="graph"></canvas>
+    </div>
+  </body>
+</html>

@@ -17,7 +17,7 @@ CREATE TABLE readings (
         reading_distance SMALLINT UNSIGNED NOT NULL,
         reading_flags SMALLINT UNSIGNED NOT NULL,
         reading_rssi TINYINT SIGNED NOT NULL,
-        reading_timestamp TIMESTAMP NOT NULL,
+        reading_timestamp DATETIME NOT NULL,
         PRIMARY KEY(reading_id));
 
 CREATE INDEX readings_index 

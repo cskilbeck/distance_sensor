@@ -16,27 +16,55 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/julienschmidt/httprouter"
 )
 
 //////////////////////////////////////////////////////////////////////
-// HTTP response body
+// Settings
 
-type Response struct {
-	Status string   `json:"status"`
-	Info   []string `json:"info"`
+type sensorSettings struct {
+	Sleep_count int `json:"sleep_count"`
+}
+
+//////////////////////////////////////////////////////////////////////
+// HTTP responses
+
+type simpleResponse struct {
+	Info []string `json:"info,omitempty"`
+}
+
+//////////////////////////////////////////////////////////////////////
+// with settings
+
+type settingsResponse struct {
+	simpleResponse
+	Settings sensorSettings `json:"settings"`
+}
+
+//////////////////////////////////////////////////////////////////////
+// with readings results
+
+type readingsResponse struct {
+	simpleResponse
+	Rows     int      `json:"rows"`     // # of results
+	Time     []int64  `json:"time"`     // seconds since unix epoch
+	Vbat     []uint16 `json:"vbat"`     // mV * 10
+	Distance []uint16 `json:"distance"` // millimetres
+	Rssi     []int8   `json:"rssi"`     // dBm
 }
 
 //////////////////////////////////////////////////////////////////////
 
-type RouteHandler = func(w http.ResponseWriter, r *http.Request, params httprouter.Params)
+type routeHandler = func(w http.ResponseWriter, r *http.Request, params httprouter.Params)
 
 //////////////////////////////////////////////////////////////////////
 // Database credentials
 
-type Credentials struct {
+type credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
@@ -45,16 +73,16 @@ type Credentials struct {
 // Logging admin
 
 const (
-	log_level_debug int = iota
-	log_level_verbose
-	log_level_info
-	log_level_warning
-	log_level_error
-	log_level_fatal
-	num_log_levels
+	logLevelDebug int = iota
+	logLevelVerbose
+	logLevelInfo
+	logLevelWarning
+	logLevelError
+	logLevelFatal
+	numLogLevels
 )
 
-var log_level_names = [num_log_levels]string{
+var logLevelNames = [numLogLevels]string{
 	"debug",
 	"verbose",
 	"info",
@@ -63,9 +91,9 @@ var log_level_names = [num_log_levels]string{
 	"fatal",
 }
 
-var log_level = log_level_info
+var logLevel = logLevelInfo
 
-type Loggers struct {
+type loggers struct {
 	Debug   *log.Logger
 	Verbose *log.Logger
 	Info    *log.Logger
@@ -74,18 +102,25 @@ type Loggers struct {
 	Fatal   *log.Logger
 }
 
-var Log Loggers
+var logger loggers
+
+//////////////////////////////////////////////////////////////////////
+// settings admin
+
+var settings_filename string
+var settings sensorSettings
 
 //////////////////////////////////////////////////////////////////////
 // DB admin
 
-var db_credentials Credentials
+var dbCredentials credentials
 
-var db_DSNString string
+var dbDSNString string
 
 //////////////////////////////////////////////////////////////////////
+// get len of longest string in a slice of strings
 
-func LongestStringLength(s []string) int {
+func longestStringLength(s []string) int {
 
 	longest := 0
 	for _, str := range s {
@@ -98,10 +133,11 @@ func LongestStringLength(s []string) int {
 }
 
 //////////////////////////////////////////////////////////////////////
+// setup log level by name
 
-func SetLogLevel(log_level_name string) (e error) {
+func setLogLevel(log_level_name string) (e error) {
 
-	log_writers := [num_log_levels]io.Writer{
+	log_writers := [numLogLevels]io.Writer{
 		os.Stdout,
 		os.Stdout,
 		os.Stdout,
@@ -110,7 +146,7 @@ func SetLogLevel(log_level_name string) (e error) {
 		os.Stderr,
 	}
 
-	longest_name := LongestStringLength(log_level_names[:])
+	longest_name := longestStringLength(logLevelNames[:])
 
 	// find the log level by name if they asked for one
 
@@ -120,11 +156,11 @@ func SetLogLevel(log_level_name string) (e error) {
 
 		found = false
 
-		for i, name := range log_level_names {
+		for i, name := range logLevelNames {
 
 			if strings.EqualFold(log_level_name, name) {
 
-				log_level = i
+				logLevel = i
 				found = true
 				break
 			}
@@ -137,58 +173,54 @@ func SetLogLevel(log_level_name string) (e error) {
 
 	// create a logger for each log_level
 
-	var logs []*log.Logger = make([]*log.Logger, num_log_levels)
+	var logs []*log.Logger = make([]*log.Logger, numLogLevels)
 
 	// use io.Discard for loggers below requested level
 
-	for i := 0; i < log_level; i++ {
+	for i := 0; i < logLevel; i++ {
 
 		logs[i] = log.New(io.Discard, "", 0)
 	}
 
 	// stdout or stderr for enabled levels
 
-	for i := log_level; i < num_log_levels; i++ {
+	for i := logLevel; i < numLogLevels; i++ {
 
-		name := log_level_names[i]
+		name := logLevelNames[i]
 		padded := name + strings.Repeat(" ", longest_name-len(name)) + ":"
 		logs[i] = log.New(log_writers[i], padded, log.Ldate|log.Ltime|log.Lmicroseconds)
 	}
 
 	// setup for use
 
-	Log = Loggers{
-		Debug:   logs[log_level_debug],
-		Verbose: logs[log_level_verbose],
-		Info:    logs[log_level_info],
-		Warning: logs[log_level_warning],
-		Error:   logs[log_level_error],
-		Fatal:   logs[log_level_fatal],
+	logger = loggers{
+		Debug:   logs[logLevelDebug],
+		Verbose: logs[logLevelVerbose],
+		Info:    logs[logLevelInfo],
+		Warning: logs[logLevelWarning],
+		Error:   logs[logLevelError],
+		Fatal:   logs[logLevelFatal],
 	}
 
 	return nil
 }
 
 //////////////////////////////////////////////////////////////////////
+// Load a JSON object from a file
 
-func LoadCredentials(credentials_filename string) error {
-
-	if len(credentials_filename) == 0 {
-
-		return errors.New("missing credentials filename")
-	}
+func loadJSON[T any](filename string, result *T) error {
 
 	var err error
 	var content []byte
 
-	if content, err = os.ReadFile(credentials_filename); err != nil {
+	if content, err = os.ReadFile(filename); err != nil {
 
-		return fmt.Errorf("loading credentials, can't %s", err)
+		return fmt.Errorf("loading %s, can't %s", filename, err)
 	}
 
-	if err = json.Unmarshal(content, &db_credentials); err != nil {
+	if err = json.Unmarshal(content, result); err != nil {
 
-		return fmt.Errorf("error parsing %s: %s", credentials_filename, err)
+		return fmt.Errorf("error parsing %s: %s", filename, err)
 	}
 	return nil
 }
@@ -196,106 +228,261 @@ func LoadCredentials(credentials_filename string) error {
 //////////////////////////////////////////////////////////////////////
 // HTTP Body is always a json Response struct
 
-func Respond(w http.ResponseWriter, status int, info ...string) {
-
-	response := Response{Status: http.StatusText(status), Info: info}
+func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 
 	var err error
 	var body []byte
 
 	if body, err = json.MarshalIndent(response, "", "  "); err != nil {
 
-		Log.Fatal.Panicf("Can't marshal json response: %s", err.Error())
+		logger.Fatal.Panicf("Can't marshal json response: %s", err.Error())
 	}
 
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, X-Auth-Token")
 	w.Header().Set("Content-Type", "application/json")
 
 	w.WriteHeader(status)
 
 	if _, err = w.Write(body); err != nil {
 
-		Log.Error.Printf("Can't write response: %s", err.Error())
+		logger.Error.Printf("Can't write response: %s", err.Error())
 	}
-
-	for i, info := range response.Info {
-		Log.Debug.Printf("Info[%d] = %s", i, info)
-	}
-
-	Log.Verbose.Printf("Status: %s", response.Status)
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func NotFound(w http.ResponseWriter, r *http.Request) {
+func respondError(w http.ResponseWriter, status int, info ...string) {
 
-	Respond(w, http.StatusNotFound, "Not found")
+	response := simpleResponse{Info: info}
+
+	sendResponse(w, status, &response)
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+func notFound(w http.ResponseWriter, r *http.Request) {
 
-	Respond(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
+	respondError(w, http.StatusNotFound, fmt.Sprintf("%s %s not found", r.Method, r.URL))
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func ParseQueryParamUnsigned(name string, base int, bits int, values *url.Values) (uint64, error) {
+func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
 
-	param := (*values)[name]
+	respondError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
+}
 
-	if len(param) < 1 {
-		return 0, fmt.Errorf("missing parameter %s", name)
+//////////////////////////////////////////////////////////////////////
+
+func checkParam(name string, values url.Values) (string, error) {
+
+	params := values[name]
+
+	if len(params) < 1 {
+		return "", fmt.Errorf("missing parameter %s", name)
 	}
 
-	if len(param) > 1 {
-		return 0, fmt.Errorf("duplicate parameter %s", name)
+	if len(params) > 1 {
+		return "", fmt.Errorf("duplicate parameter %s", name)
 	}
 
-	v, err := strconv.ParseUint(param[0], base, bits)
+	if len(params[0]) == 0 {
+		return "", fmt.Errorf("missing value for parameter %s", name)
+	}
+
+	return params[0], nil
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func parseQueryParamInt[T int64 | uint64](name string, values url.Values, parser func(string) (T, error)) (T, error) {
+
+	param, err := checkParam(name, values)
+
+	if err != nil {
+		return 0, err
+	}
+
+	v, err := parser(param)
 
 	if err != nil {
 		return 0, fmt.Errorf("bad value for '%s' (%s)", name, err.Error())
 	}
+
 	return v, nil
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func ParseQueryParamSigned(name string, base int, bits int, values *url.Values) (int64, error) {
+func parseQueryParamUnsigned(name string, base int, bits int, values url.Values) (uint64, error) {
 
-	param := (*values)[name]
+	return parseQueryParamInt[uint64](name, values, func(s string) (uint64, error) {
 
-	if len(param) < 1 {
-		return 0, fmt.Errorf("missing parameter %s", name)
-	}
-
-	if len(param) > 1 {
-		return 0, fmt.Errorf("duplicate parameter %s", name)
-	}
-
-	v, err := strconv.ParseInt(param[0], base, bits)
-
-	if err != nil {
-		return 0, fmt.Errorf("bad value for '%s' (%s)", name, err.Error())
-	}
-	return v, nil
+		return strconv.ParseUint(s, base, bits)
+	})
 }
 
 //////////////////////////////////////////////////////////////////////
 
-func Logged(h RouteHandler) RouteHandler {
+func parseQueryParamSigned(name string, base int, bits int, values url.Values) (int64, error) {
+
+	return parseQueryParamInt[int64](name, values, func(s string) (int64, error) {
+
+		return strconv.ParseInt(s, base, bits)
+	})
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func parseQueryParamTime(name string, values url.Values) (time.Time, error) {
+
+	param, err := checkParam(name, values)
+
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return time.Parse(time.RFC3339, param)
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func logged(h routeHandler) routeHandler {
 
 	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-		Log.Verbose.Printf("%s %s", r.Method, r.URL)
+		logger.Verbose.Printf("%s %s", r.Method, r.URL)
 		h(w, r, params)
 	}
 }
 
 //////////////////////////////////////////////////////////////////////
+// Get report of readings for time span
 
-func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	var err error
+
+	// parse the query string
+
+	var errors = make([]string, 0)
+
+	q := r.URL.Query()
+
+	var from time.Time
+	var to time.Time
+	var device uint64
+
+	if device, err = parseQueryParamUnsigned("device", 16, 48, q); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if from, err = parseQueryParamTime("from", q); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if to, err = parseQueryParamTime("to", q); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if len(errors) != 0 {
+		respondError(w, http.StatusBadRequest, errors...)
+		return
+	}
+
+	// open the database
+
+	var db *sql.DB
+
+	if db, err = sql.Open("mysql", dbDSNString); err != nil {
+
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+		return
+	}
+
+	logger.Debug.Println("Database opened")
+
+	defer db.Close()
+
+	var device_id int64
+
+	device_address := fmt.Sprintf("%012x", device)
+
+	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("Device %s not found", device_address))
+			return
+		}
+	}
+
+	logger.Debug.Printf("Device ID %d", device_id)
+
+	if len(errors) != 0 {
+		respondError(w, http.StatusBadRequest, errors...)
+		return
+	}
+
+	logger.Debug.Printf("From: %s, To: %s", from.Format(time.RFC3339), to.Format(time.RFC3339))
+
+	query_string := `SELECT
+						reading_timestamp, reading_vbat, reading_distance, reading_rssi
+						FROM readings
+						WHERE device_id = ?
+							AND reading_timestamp >= ?
+							AND reading_timestamp <= ?
+						ORDER BY reading_timestamp ASC`
+
+	var stmt *sql.Stmt
+
+	if stmt, err = db.Prepare(query_string); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	defer stmt.Close()
+
+	var query *sql.Rows
+
+	if query, err = stmt.Query(device_id, from.Format(time.RFC3339), to.Format(time.RFC3339)); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response := readingsResponse{}
+
+	rows := 0
+
+	for query.Next() {
+		var tim time.Time
+		var vbat uint16
+		var distance uint16
+		var rssi int8
+		err = query.Scan(&tim, &vbat, &distance, &rssi)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if distance != 0 {
+			response.Time = append(response.Time, tim.Unix())
+			response.Vbat = append(response.Vbat, vbat)
+			response.Distance = append(response.Distance, distance)
+			response.Rssi = append(response.Rssi, rssi)
+			rows += 1
+		}
+		logger.Debug.Printf("Fetched %d rows", rows)
+	}
+
+	response.Rows = rows
+
+	sendResponse(w, http.StatusOK, &response)
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
 	var err error
 
@@ -311,44 +498,51 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 
 	q := r.URL.Query()
 
-	if vbat, err = ParseQueryParamUnsigned("vbat", 10, 16, &q); err != nil {
+	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if distance, err = ParseQueryParamUnsigned("distance", 10, 16, &q); err != nil {
+	if distance, err = parseQueryParamUnsigned("distance", 10, 16, q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if device, err = ParseQueryParamUnsigned("device", 16, 48, &q); err != nil {
+	if device, err = parseQueryParamUnsigned("device", 16, 48, q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if flags, err = ParseQueryParamUnsigned("flags", 10, 16, &q); err != nil {
+	if flags, err = parseQueryParamUnsigned("flags", 10, 16, q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if rssi, err = ParseQueryParamSigned("rssi", 10, 8, &q); err != nil {
+	if rssi, err = parseQueryParamSigned("rssi", 10, 8, q); err != nil {
 		errors = append(errors, err.Error())
 	}
 
 	if len(errors) != 0 {
-		Respond(w, http.StatusBadRequest, errors...)
+		respondError(w, http.StatusBadRequest, errors...)
 		return
 	}
 
-	Log.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
+	logger.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
+
+	// reload settings every time in case the file was edited
+
+	if err := loadJSON[sensorSettings](settings_filename, &settings); err != nil {
+
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error loading settings: %s", err.Error()))
+	}
 
 	// open the database
 
 	var db *sql.DB
 
-	if db, err = sql.Open("mysql", db_DSNString); err != nil {
+	if db, err = sql.Open("mysql", dbDSNString); err != nil {
 
-		Respond(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
 		return
 	}
 
-	Log.Debug.Println("Database opened")
+	logger.Debug.Println("Database opened")
 
 	defer db.Close()
 
@@ -356,20 +550,18 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 
 	device_address := fmt.Sprintf("%012x", device)
 
-	Log.Debug.Printf("Get device id for %s", device_address)
+	logger.Debug.Printf("Get device id for %s", device_address)
 
 	var device_id int64
 	var insert sql.Result
 
-	v_device_address := sql.Named("device_address", device_address)
-
-	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = @device_address;`, v_device_address).Scan(&device_id); err != nil {
+	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
 
 		if err == sql.ErrNoRows {
 
-			Log.Info.Printf("New device: %s", device_address)
+			logger.Info.Printf("New device: %s", device_address)
 
-			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (@device_address)`, v_device_address); err == nil {
+			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (?)`, device_address); err == nil {
 
 				device_id, err = insert.LastInsertId()
 			}
@@ -377,38 +569,33 @@ func InsertReading(w http.ResponseWriter, r *http.Request, params httprouter.Par
 	}
 
 	if err != nil {
-		Respond(w, http.StatusInternalServerError, "Database error adding device %s: %s", device_address, err.Error())
+		respondError(w, http.StatusInternalServerError, "Database error adding device %s: %s", device_address, err.Error())
 		return
 	}
 
-	Log.Debug.Printf("Device ID %d", device_id)
+	logger.Debug.Printf("Device ID %d", device_id)
 
 	// add the reading
 
 	var reading_id int64
 
-	v_device_id := sql.Named("device_id", device_id)
-	v_vbat := sql.Named("vbat", vbat)
-	v_distance := sql.Named("distance", distance)
-	v_flags := sql.Named("flags", flags)
-	v_rssi := sql.Named("rssi", rssi)
-
-	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_timestamp, reading_rssi)
-                         	  VALUES (@device_id, @vbat, @distance, @flags, CURRENT_TIMESTAMP(), @rssi);`, v_device_id, v_vbat, v_distance, v_flags, v_rssi); err == nil {
+	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
+                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags, rssi); err == nil {
 
 		reading_id, err = insert.LastInsertId()
 	}
 
 	if err != nil {
-		Respond(w, http.StatusInternalServerError, fmt.Sprintf("Database error adding reading: %s", err.Error()))
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Database error adding reading: %s", err.Error()))
 		return
 	}
 
-	Log.Debug.Printf("Reading ID %d", reading_id)
+	logger.Debug.Printf("Reading ID %d", reading_id)
 
 	// done
 
-	Respond(w, http.StatusOK, fmt.Sprintf("Reading id: %d", reading_id))
+	response := settingsResponse{Settings: settings}
+	sendResponse(w, http.StatusOK, &response)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -418,86 +605,139 @@ func main() {
 	// command line parameters
 
 	var credentials_filename string
+	var key_filename string
+	var cert_filename string
 	var log_level_name string
 
 	flag.StringVar(&credentials_filename, "credentials", "", "Specify credentials filename (required)")
-	flag.StringVar(&log_level_name, "log_level", log_level_names[log_level], fmt.Sprintf("Specify log level (%s)", strings.Join(log_level_names[:], "|")))
+	flag.StringVar(&key_filename, "key", "", "Specify TLS key filename (required)")
+	flag.StringVar(&cert_filename, "cert", "", "Specify TLS cert filename (required)")
+	flag.StringVar(&settings_filename, "settings", "", "Specify settings filename (required)")
+	flag.StringVar(&log_level_name, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
 	flag.Parse()
 
-	// check and action command line parameters
+	// check command line parameters
 
 	errs := make([]error, 0)
 
-	if err := SetLogLevel(log_level_name); err != nil {
+	if err := setLogLevel(log_level_name); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := LoadCredentials(credentials_filename); err != nil {
+	if len(key_filename) == 0 {
+		errs = append(errs, fmt.Errorf("missing key_filename"))
+	}
+
+	if len(cert_filename) == 0 {
+		errs = append(errs, fmt.Errorf("missing cert_filename"))
+	}
+
+	if len(credentials_filename) == 0 {
+		errs = append(errs, fmt.Errorf("missing credentials_filename"))
+	}
+
+	if len(settings_filename) == 0 {
+		errs = append(errs, fmt.Errorf("missing settings_filename"))
+	}
+
+	// load database credentials
+
+	if err := loadJSON[credentials](credentials_filename, &dbCredentials); err != nil {
 		errs = append(errs, err)
 	}
+
+	// check settings at boot so it fails early if there's a problem
+
+	if err := loadJSON[sensorSettings](settings_filename, &settings); err != nil {
+		errs = append(errs, err)
+	}
+
+	// report any startup errors
 
 	if len(errs) != 0 {
 
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "%s\n", e.Error())
 		}
-		fmt.Fprintf(os.Stderr, "Usage:\n")
 		flag.CommandLine.SetOutput(os.Stderr)
-		flag.PrintDefaults()
-
-		exit_code := 0
-		if len(errs) != 0 {
-			exit_code = 1
-		}
-		os.Exit(exit_code)
+		flag.Usage()
+		os.Exit(1)
 	}
 
-	// command line OK, here we go
+	// startup ok, here we go
 
-	Log.Info.Println()
-	Log.Info.Printf("========== SALT SENSOR SERVICE BEGINS ==========")
-	Log.Info.Println()
+	logger.Info.Println()
+	logger.Info.Printf("<<<<<<<<<< SALT SENSOR SERVICE BEGINS >>>>>>>>>>")
 
-	Log.Debug.Printf("Log level: %s", log_level_names[log_level])
+	logger.Verbose.Printf("Log level: %s", logLevelNames[logLevel])
+	logger.Verbose.Printf("Settings file: %s", settings_filename)
+	logger.Verbose.Printf("Credentials file: %s", credentials_filename)
+	logger.Verbose.Printf("Key file: %s", key_filename)
+	logger.Verbose.Printf("Cert file: %s", cert_filename)
 
 	// database config
 
-	Log.Verbose.Printf("Loaded credentials file %s", credentials_filename)
-
 	cfg := mysql.Config{
-		User:                 db_credentials.Username,
-		Passwd:               db_credentials.Password,
+		User:                 dbCredentials.Username,
+		Passwd:               dbCredentials.Password,
 		Net:                  "tcp",
 		Addr:                 "localhost:3306",
 		DBName:               "salt_sensor",
 		AllowNativePasswords: true,
+		ParseTime:            true,
 	}
 
-	Log.Debug.Printf("Database is '%s'", cfg.DBName)
-	Log.Debug.Printf("Username is '%s'", cfg.User)
+	logger.Debug.Printf("Database is '%s'", cfg.DBName)
+	logger.Debug.Printf("Username is '%s'", cfg.User)
 
-	db_DSNString = cfg.FormatDSN()
+	dbDSNString = cfg.FormatDSN()
 
 	// HTTP server
 
-	Log.Verbose.Printf("HTTP server starting")
+	http_router := httprouter.New()
+	http_router.NotFound = http.HandlerFunc(notFound)
+	http_router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
 
-	router := httprouter.New()
+	http_router.PUT("/reading", logged(putReading))
 
-	router.NotFound = http.HandlerFunc(NotFound)
-	router.MethodNotAllowed = http.HandlerFunc(MethodNotAllowed)
+	// HTTPS server
 
-	router.PUT("/reading", Logged(InsertReading))
+	https_router := httprouter.New()
+	https_router.NotFound = http.HandlerFunc(notFound)
+	https_router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
 
-	err := http.ListenAndServe("0.0.0.0:5002", router)
+	https_router.GET("/readings", logged(getReadings))
 
-	if errors.Is(err, http.ErrServerClosed) {
+	// run them both
 
-		Log.Verbose.Printf("HTTP server closed")
+	var wg sync.WaitGroup
 
-	} else if err != nil {
+	wg.Add(2)
 
-		Log.Fatal.Printf("Error starting HTTP server: %s", err)
-		os.Exit(1)
+	run_server := func(name string, listener func() error) {
+
+		logger.Verbose.Printf("%s server starting", name)
+
+		err := listener()
+
+		if errors.Is(err, http.ErrServerClosed) {
+			logger.Verbose.Printf("%s server closed", name)
+
+		} else if err != nil {
+			logger.Error.Printf("Error starting %s server: %s", name, err.Error())
+		}
+		wg.Done()
 	}
+
+	go run_server("HTTP", func() error {
+		return http.ListenAndServe("0.0.0.0:5002", http_router)
+	})
+
+	go run_server("HTTPS", func() error {
+		return http.ListenAndServeTLS(":443", cert_filename, key_filename, https_router)
+	})
+
+	wg.Wait()
+
+	logger.Info.Printf("---------- SALT SENSOR SERVICE ENDS ----------")
 }
