@@ -24,32 +24,30 @@ import (
 )
 
 //////////////////////////////////////////////////////////////////////
-// Settings
+// Settings to send back to gadget
 
 type sensorSettings struct {
 	Sleep_count int `json:"sleep_count"`
 }
 
 //////////////////////////////////////////////////////////////////////
-// HTTP responses
+// HTTP error response
 
-type simpleResponse struct {
+type errorResponse struct {
 	Info []string `json:"info,omitempty"`
 }
 
 //////////////////////////////////////////////////////////////////////
-// with settings
+// HTTP PUT /reading response
 
-type settingsResponse struct {
-	simpleResponse
+type putReadingResponse struct {
 	Settings sensorSettings `json:"settings"`
 }
 
 //////////////////////////////////////////////////////////////////////
-// with readings results
+// HTTPS GET /readings response
 
-type readingsResponse struct {
-	simpleResponse
+type getReadingsResponse struct {
 	Rows     int      `json:"rows"`     // # of results
 	Time     []int64  `json:"time"`     // seconds since unix epoch
 	Vbat     []uint16 `json:"vbat"`     // mV * 10
@@ -103,12 +101,6 @@ type loggers struct {
 }
 
 var logger loggers
-
-//////////////////////////////////////////////////////////////////////
-// settings admin
-
-var settings_filename string
-var settings sensorSettings
 
 //////////////////////////////////////////////////////////////////////
 // DB admin
@@ -239,8 +231,8 @@ func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 	}
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, X-Auth-Token")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT")
+	w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type")
 	w.Header().Set("Content-Type", "application/json")
 
 	w.WriteHeader(status)
@@ -255,9 +247,7 @@ func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 
 func respondError(w http.ResponseWriter, status int, info ...string) {
 
-	response := simpleResponse{Info: info}
-
-	sendResponse(w, status, &response)
+	sendResponse(w, status, &errorResponse{Info: info})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -451,7 +441,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 		return
 	}
 
-	response := readingsResponse{}
+	response := getReadingsResponse{}
 
 	rows := 0
 
@@ -525,13 +515,6 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	logger.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
 
-	// reload settings every time in case the file was edited
-
-	if err := loadJSON[sensorSettings](settings_filename, &settings); err != nil {
-
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error loading settings: %s", err.Error()))
-	}
-
 	// open the database
 
 	var db *sql.DB
@@ -553,9 +536,10 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 	logger.Debug.Printf("Get device id for %s", device_address)
 
 	var device_id int64
+	var sleep_count int
 	var insert sql.Result
 
-	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+	if err = db.QueryRow(`SELECT device_id, sleep_count FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id, &sleep_count); err != nil {
 
 		if err == sql.ErrNoRows {
 
@@ -594,8 +578,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	// done
 
-	response := settingsResponse{Settings: settings}
-	sendResponse(w, http.StatusOK, &response)
+	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{Sleep_count: sleep_count}})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -612,7 +595,6 @@ func main() {
 	flag.StringVar(&credentials_filename, "credentials", "", "Specify credentials filename (required)")
 	flag.StringVar(&key_filename, "key", "", "Specify TLS key filename (required)")
 	flag.StringVar(&cert_filename, "cert", "", "Specify TLS cert filename (required)")
-	flag.StringVar(&settings_filename, "settings", "", "Specify settings filename (required)")
 	flag.StringVar(&log_level_name, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
 	flag.Parse()
 
@@ -636,19 +618,9 @@ func main() {
 		errs = append(errs, fmt.Errorf("missing credentials_filename"))
 	}
 
-	if len(settings_filename) == 0 {
-		errs = append(errs, fmt.Errorf("missing settings_filename"))
-	}
-
 	// load database credentials
 
 	if err := loadJSON[credentials](credentials_filename, &dbCredentials); err != nil {
-		errs = append(errs, err)
-	}
-
-	// check settings at boot so it fails early if there's a problem
-
-	if err := loadJSON[sensorSettings](settings_filename, &settings); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -670,7 +642,6 @@ func main() {
 	logger.Info.Printf("<<<<<<<<<< SALT SENSOR SERVICE BEGINS >>>>>>>>>>")
 
 	logger.Verbose.Printf("Log level: %s", logLevelNames[logLevel])
-	logger.Verbose.Printf("Settings file: %s", settings_filename)
 	logger.Verbose.Printf("Credentials file: %s", credentials_filename)
 	logger.Verbose.Printf("Key file: %s", key_filename)
 	logger.Verbose.Printf("Cert file: %s", cert_filename)
