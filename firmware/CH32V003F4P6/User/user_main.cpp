@@ -20,11 +20,25 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#define DEBUG
+// log printf statements
+
+#define DEBUG_PRINTF
+
+// don't talk to the ESP
 
 //#define DEBUG_NO_ESP
 
-#if defined(DEBUG)
+// ignore server sleep_count, use this instead (also makes time per sleep_count shorter - ~2 seconds instead of ~30)
+
+#define DEBUG_OVERRIDE_SLEEP_COUNT 10
+
+// button press puts it to sleep
+
+//#define DEBUG_BUTTON_SLEEP
+
+//////////////////////////////////////////////////////////////////////
+
+#if defined(DEBUG_PRINTF)
 #include <stdio.h>
 #endif
 
@@ -40,24 +54,28 @@
 #include "crc.h"
 #include "user_ch32v003.h"
 
-#if defined(DEBUG)
+#if defined(DEBUG_PRINTF)
 #define debug printf
 #else
 #define debug(...) do {} while (false)
 #endif
 
-#define SLEEP_DELAY_TICKS 1
-
 //////////////////////////////////////////////////////////////////////
 
 namespace
 {
-    static constexpr int MAX_VALID_DISTANCE = 7000;
-    static constexpr int MAX_DISTANCE_TRIES = 5;
+    int constexpr MAX_VALID_DISTANCE = 5000;                // any distance reading > this is invalid
+    int constexpr MAX_DISTANCE_TRIES = 5;                   // try to get a valid distance reading this many times
+    int constexpr FACTORY_RESET_BUTTON_TIME_MS = 5000;      // hold button for this many ms to factory reset
+    int constexpr ESP_POWER_OFF_TIME_MS = 250;              // power cycle ESP for this many ms
+    int constexpr ESP_CRASHED_TIMEOUT_MS = 20000;           // give ESP this many ms to send it else reboot it
+    int constexpr SLEEP_DELAY_TICKS = 1;                    // pause for this many ticks (ms) before going to sleep
+
 
     enum state_t
     {
         state_boot = 0,
+        state_factory_reset,
         state_read_vbat,
         state_read_distance,
         state_wait_for_esp,
@@ -67,10 +85,11 @@ namespace
         state_num
     };
 
-#if defined(DEBUG)
+#if defined(DEBUG_PRINTF)
     char const *state_name[state_num] =
     {
                     "boot",
+                    "factory_reset",
                     "read_vbat",
                     "read_distance",
                     "wait_for_esp",
@@ -142,6 +161,7 @@ namespace
     }
 
     void spi_start();
+    void user_init();
     void init_peripherals();
     void set_state(state_t new_state);
 
@@ -192,11 +212,13 @@ namespace
 
     button_t button;
 
+    stopwatch_t button_held_timer;
+
     // how many boots from standby mode since power on
 
     int standby_boot = 0;
 
-    uint16 sleep_count = 705;
+    uint16 sleep_count = 304;
 
     //////////////////////////////////////////////////////////////////////
 
@@ -278,7 +300,7 @@ namespace
         PWR->AWUCSR &= ~PWR_AWUEN;
         PWR->AWUPSC = PWR_AWU_Prescaler_61440;
 
-#if defined(DEBUG_NO_ESP)
+#if defined(DEBUG_OVERRIDE_SLEEP_COUNT)
         PWR->AWUWR = 2;
 #else
         PWR->AWUWR = 63;
@@ -298,7 +320,7 @@ namespace
         for(uint32 i = count; i != 0; --i) {
             asm volatile ("wfi");
             if(GPIO_Get(GPIO_PORT_BUTTON, GPIO_MASK_BUTTON) == 0) {
-                payload.flags |= ch32_flag_button_boot;
+                payload.ch32_flag_button_boot = 1;
                 break;
             }
         }
@@ -325,13 +347,8 @@ namespace
 
         standby_boot += 1;
 
-        init_peripherals();
+        user_init();
 
-        button.pressed = 0;
-        button.released = 0;
-
-        state_start_ticks = 0;
-        set_state(state_boot);
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -603,6 +620,9 @@ namespace
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC | RCC_APB2Periph_SPI1 | RCC_APB2Periph_AFIO;
         RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
 
+        RCC->APB2PRSTR |= RCC_SPI1RST;
+        RCC->APB2PRSTR &= ~RCC_SPI1RST;
+
         GPIO_Setup(GPIO_PORT_SPI_CLK, GPIO_PIN_SPI_CLK, GPIO_IN_FLOATING);
         GPIO_Setup(GPIO_PORT_SPI_MOSI, GPIO_PIN_SPI_MOSI, GPIO_IN_FLOATING);
         GPIO_Setup(GPIO_PORT_SPI_MISO, GPIO_PIN_SPI_MISO, GPIO_OUT_AF_PP_10MHZ);
@@ -711,11 +731,26 @@ namespace
 
     //////////////////////////////////////////////////////////////////////
 
+    enum power_t
+    {
+        power_on = 0,
+        power_off = 1
+    };
+
+    //////////////////////////////////////////////////////////////////////
+
+    void power_set(power_t const p)
+    {
+        GPIO_SetTo(GPIO_PORT_5VSW, GPIO_MASK_5VSW, static_cast<int>(p));
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
     void init_power()
     {
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOC;
 
-        GPIO_Set(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+        power_set(power_off);
 
         GPIO_Setup(GPIO_PORT_5VSW, GPIO_PIN_5VSW, GPIO_OUT_PP_10MHZ);
     }
@@ -759,12 +794,28 @@ namespace
         GPIO_Set(GPIO_PORT_VBAT_SNS_EN, GPIO_MASK_VBAT_SNS_EN);
 
         // don't switch on the 5V rail for level shifter, distance sensor & ESP12 yet
-        GPIO_Set(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+        power_set(power_off);
 
         // LED off to start with
         led_off();
 
         debug("\n\nSysClk:%d (boot %d)\n", SystemCoreClock, standby_boot);
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void user_init()
+    {
+        init_peripherals();
+
+        button.pressed = 0;
+        button.released = 0;
+
+        button_held_timer.reset();
+
+        ticks = 0;
+
+        set_state(state_boot);
     }
 }
 
@@ -774,13 +825,24 @@ extern "C" int main()
 {
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
-    init_peripherals();
-
-    payload.flags = 0;
-
-    set_state(state_boot);
+    user_init();
 
     while(true) {
+
+        // regardless of state, hold button for N seconds to factory reset
+
+        if(button.held) {
+
+            if(button_held_timer.elapsed() > FACTORY_RESET_BUTTON_TIME_MS && payload.ch32_flag_factory_reset == 0) {
+
+                payload.ch32_flag_factory_reset = 1;
+                set_state(state_factory_reset);
+            }
+        } else {
+            button_held_timer.reset();
+        }
+
+        uint32 elapsed = state_elapsed_ticks();
 
         switch(state)
         {
@@ -788,23 +850,36 @@ extern "C" int main()
 
             case state_boot:
             {
-                if(button.held && state_elapsed_ticks() >= 5000) {
+                payload.distance = 0;
+                payload.vbat = 0;
 
-                    payload.flags |= ch32_flag_factory_reset;
-                }
+                vbat_status = status_idle;
+                vbat_timer.reset();
 
-                if((!button.held || (payload.flags & ch32_flag_factory_reset) != 0) && state_elapsed_ticks() > 10) {
+                button.released = 0;
+                button.pressed = 0;
 
+                set_state(state_read_vbat);
+            }
+            break;
+
+            ////////////////////////////////////////
+
+            case state_factory_reset:
+            {
+                if(elapsed < 1000 || button.held) {
+
+                    GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (elapsed >> 6) & 1);
+
+                } else {
+
+                    payload.flags = 0;
+                    payload.ch32_flag_factory_reset = 1;
                     payload.distance = 0;
                     payload.vbat = 0;
-
-                    vbat_status = status_idle;
-                    vbat_timer.reset();
-
-                    button.released = 0;
-                    button.pressed = 0;
-
-                    set_state(state_read_vbat);
+                    init_message<ch32_reading_payload_t>(&tx_msg);
+                    power_set(power_off);
+                    set_state(state_reboot_esp);
                 }
             }
             break;
@@ -813,18 +888,6 @@ extern "C" int main()
 
             case state_read_vbat:
             {
-                uint32 elapsed = state_elapsed_ticks();
-
-                if((payload.flags & ch32_flag_factory_reset) != 0) {
-
-                    if(elapsed < 1000 || button.held) {
-
-                        GPIO_SetTo(GPIO_PORT_LED, GPIO_MASK_LED, (elapsed >> 6) & 1);
-                        break;
-                    }
-
-                }
-
                 // give power 5 ms to stabilize before reading vbat
                 if(vbat_status == status_idle && elapsed > 5) {
 
@@ -841,8 +904,9 @@ extern "C" int main()
                     vbat_status = status_idle;
 
                     debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
+
                     // switch on the 5V rail for level shifter, distance sensor
-                    GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+                    power_set(power_on);
 
                     // and distance reading
                     num_distance_readings = 0;
@@ -859,10 +923,8 @@ extern "C" int main()
 
             case state_read_distance:
             {
-                uint32 elapsed = state_elapsed_ticks();
-
                 // end led flash at start of distance reading
-                if(elapsed > 2) {
+                if(elapsed > 0) {
                     led_off();
                 }
 
@@ -901,11 +963,11 @@ extern "C" int main()
 
                     } else {
 
-                        payload.flags |= ch32_flag_error_reading_distance;
+                        payload.ch32_flag_error_reading_distance = 1;
                     }
                 }
 
-                if(payload.distance != 0 || ((payload.flags & ch32_flag_error_reading_distance) !=0 ) || elapsed > 200) {
+                if(payload.distance != 0 || payload.ch32_flag_error_reading_distance || elapsed > 200) {
 
                     // switch off the blasted led for sure
                     led_off();
@@ -930,16 +992,16 @@ extern "C" int main()
 
             case state_wait_for_esp:
             {
-                if(GPIO_Get(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS) != 0) {
+                if(GPIO_Get(GPIO_PORT_SPI_CS, GPIO_MASK_SPI_CS) != 0 && elapsed > 2) {
 
                     init_spi();
                     spi_start();
                     set_state(state_esp);
 
-                } else if(state_elapsed_ticks() > 1000) {
+                    // ESP boot timeout, power cycle it in desperation
+                } else if(elapsed > 5000) {
 
-                    led_on();
-                    GPIO_Set(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+                    power_set(power_off);
                     set_state(state_reboot_esp);
                 }
             }
@@ -949,10 +1011,9 @@ extern "C" int main()
 
             case state_reboot_esp:
             {
-                if(state_elapsed_ticks() > 1000) {
-                    GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+                if(elapsed > ESP_POWER_OFF_TIME_MS) {
+                    power_set(power_on);
                     set_state(state_wait_for_esp);
-                    led_off();
                 }
             }
             break;
@@ -986,7 +1047,7 @@ extern "C" int main()
 
                         if((rx_payload.flags & esp_status_factory_resetting) != 0) {
 
-                            payload.flags &= ~ch32_flag_factory_reset;
+                            payload.ch32_flag_factory_reset = 0;
                             init_message<ch32_reading_payload_t>(&tx_msg);
                         }
 
@@ -998,9 +1059,9 @@ extern "C" int main()
                     }
                 }
 
-                if(state_elapsed_ticks() > 10000) {
-                    led_on();
-                    GPIO_Set(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
+                // ESP crashed or something? power cycle it after 10 seconds
+                if(elapsed > ESP_CRASHED_TIMEOUT_MS) {
+                    power_set(power_off);
                     set_state(state_reboot_esp);
                 }
             }
@@ -1010,19 +1071,22 @@ extern "C" int main()
 
             case state_done:
             {
-                if(state_elapsed_ticks() > SLEEP_DELAY_TICKS) {
+                if(elapsed > SLEEP_DELAY_TICKS && !button.held) {
 
                     if(rx_payload.sleep_count != 0) {
                         sleep_count = rx_payload.sleep_count;
                     } else {
                         debug("No sleep count, keeping %d\n", sleep_count);
                     }
-#if defined(DEBUG_NO_ESP)
-                    sleep_count = 1;
+
+#if defined(DEBUG_OVERRIDE_SLEEP_COUNT)
+                    sleep_count = DEBUG_OVERRIDE_SLEEP_COUNT;
 #endif
+
                     debug("DONE Sleeping for %d\n", sleep_count);
                     flush_printf();
-                    sleep(sleep_count);// should be about 6 hours
+                    power_set(power_off);
+                    sleep(sleep_count);
                 }
             }
             break;
@@ -1030,7 +1094,7 @@ extern "C" int main()
 
         // @DEBUG button puts it to sleep for ~30 seconds
 
-#if defined(DEBUG)
+#if defined(DEBUG_BUTTON_SLEEP)
 
         if(button.pressed) {
             stopwatch_t debounce;
@@ -1044,7 +1108,6 @@ extern "C" int main()
             flush_printf();
             sleep(1);
         }
-
 #endif
     }
 }

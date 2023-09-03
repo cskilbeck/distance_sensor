@@ -43,7 +43,17 @@ struct ch32_reading_payload_t
 
     uint16_t vbat;
     uint16_t distance;
-    uint16_t flags;
+    union
+    {
+        struct
+        {
+            uint16_t ch32_flag_factory_reset :1;
+            uint16_t ch32_flag_error_reading_vbat :1;
+            uint16_t ch32_flag_error_reading_distance :1;
+            uint16_t ch32_flag_button_boot :1;
+        };
+        uint16_t flags;
+    };
 };
 
 static constexpr uint32_t ch32_flag_factory_reset = 1 << 0;
