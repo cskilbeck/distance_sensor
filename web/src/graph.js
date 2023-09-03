@@ -1,8 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+
 var chart;
+
+//////////////////////////////////////////////////////////////////////
 
 function show_graph(idx) {
 
-    var date_format = function (x) {
+    //////////////////////////////////////////////////////////////////////
+
+    function date_format(x) {
 
         return new Date(x).toLocaleString('en-GB', {
 
@@ -12,7 +18,47 @@ function show_graph(idx) {
             minute: 'numeric',
             timezone: 'UTC'
         });
-    };
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    function setCookie(name, value, days) {
+
+        var expires = "";
+        if (days) {
+            var date = new Date();
+            date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+            expires = "; expires=" + date.toUTCString();
+        }
+        document.cookie = name + "=" + (value || "") + expires + "; path=/";
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    function getCookie(name) {
+
+        var nameEQ = name + "=";
+        var ca = document.cookie.split(';');
+        for (var i = 0; i < ca.length; i++) {
+            var c = ca[i];
+            while (c.charAt(0) == ' ') {
+                c = c.substring(1, c.length);
+            }
+            if (c.indexOf(nameEQ) == 0) {
+                return c.substring(nameEQ.length, c.length);
+            }
+        }
+        return null;
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    function eraseCookie(name) {
+
+        document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+    }
+
+    //////////////////////////////////////////////////////////////////////
 
     var now = new Date(new Date().setDate(new Date().getDate() + 1));
     var then = new Date(new Date().setDate(now.getDate() - 121));
@@ -20,10 +66,28 @@ function show_graph(idx) {
     var host = "vibue.com";
     //var host = "localhost";
 
+    var device_name_input_field = document.getElementById('device_address');
+    var device_name = device_name_input_field.value;
+    console.log(`From text box: [${device_name}]`);
+
+    if (device_name == null || device_name == "") {
+        device_name = getCookie("device_name");
+        console.log(`From cookie: [${device_name}]`);
+        if (device_name == null || device_name == "") {
+            console.log("Default device_name");
+            device_name = '84f3eb536123';
+        }
+    }
+
+    setCookie("device_name", device_name, 9999);
+
+    device_name_input_field.value = device_name;
+
     var url = new URL(`https://${host}/readings`);
     url.searchParams.set('from', then.toISOString());
     url.searchParams.set('to', now.toISOString());
-    url.searchParams.set('device', '84f3eb536123');
+    url.searchParams.set('device', device_name);
+    console.log(device_name);
     url.searchParams.set('nonce', new Date().getMilliseconds());
 
     var xhr = new XMLHttpRequest();
@@ -84,7 +148,7 @@ function show_graph(idx) {
                 showLine: true,
                 borderColor: config.color,
                 backgroundColor: config.color,
-                lineTension: 0,
+                lineTension: 0.01,
                 fill: false,
             });
 
