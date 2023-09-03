@@ -11,15 +11,18 @@
 // x    Measure power consumption
 // x    Factory reset (long button press)
 // x    B2B Connector
+// x    Status/history web page
+// x    Enclosure
+//
 //      Alexa notification
 //      Email notification
-//      Enclosure
 //
-//      Status/history web page (Go templates + FastCGI) (Grafana?)
 //
 //////////////////////////////////////////////////////////////////////
 
 #define DEBUG
+
+//#define DEBUG_NO_ESP
 
 #if defined(DEBUG)
 #include <stdio.h>
@@ -35,20 +38,7 @@
 #include "user_gpio.h"
 #include "user_pins.h"
 #include "crc.h"
-
-#define SYSTICK_SR_CNTIF 0x01
-
-#define SYSTICK_CTLR_ENABLE 0x01
-#define SYSTICK_CTLR_INTEN 0x02
-#define SYSTICK_CTLR_HCLK 0x04
-#define SYSTICK_CTLR_AUTORE 0x08
-
-#define PFIC_SCTLR_SLEEPDEEP 0x04
-#define PFIC_SCTLR_WFITOWFE 0x08
-#define PFIC_SCTLR_SEVONPEND 0x10
-#define PFIC_SCTLR_SETEVENT 0x20
-
-#define PWR_AWUEN 0x02
+#include "user_ch32v003.h"
 
 #if defined(DEBUG)
 #define debug printf
@@ -56,11 +46,7 @@
 #define debug(...) do {} while (false)
 #endif
 
-#if defined(DEBUG)
-#define SLEEP_DELAY_TICKS 100
-#else
-#define SLEEP_DELAY_TICKS 2
-#endif
+#define SLEEP_DELAY_TICKS 1
 
 //////////////////////////////////////////////////////////////////////
 
@@ -206,10 +192,6 @@ namespace
 
     button_t button;
 
-    // what have we read so far? (vbat, distance)
-
-    uint32 got_readings = 0;
-
     // how many boots from standby mode since power on
 
     int standby_boot = 0;
@@ -295,7 +277,12 @@ namespace
         // setup auto wakeup every ~30seconds
         PWR->AWUCSR &= ~PWR_AWUEN;
         PWR->AWUPSC = PWR_AWU_Prescaler_61440;
+
+#if defined(DEBUG_NO_ESP)
+        PWR->AWUWR = 2;
+#else
         PWR->AWUWR = 63;
+#endif
         PWR->AWUCSR |= PWR_AWUEN;
 
         // prepare standby mode
@@ -373,8 +360,11 @@ namespace
         if((TIM1->INTFR & TIM_IT_CC2) != 0) {
             distance_value = TIM1->CH2CVR;
             distance_status = status_complete;
+            TIM1->INTFR = ~TIM_IT_CC2;
         }
-        TIM1->INTFR = ~(TIM_IT_CC1 | TIM_IT_CC2);
+        if((TIM1->INTFR & TIM_IT_CC1) != 0) {
+            TIM1->INTFR = ~TIM_IT_CC1;
+        }
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -474,28 +464,27 @@ namespace
         RCC->APB1PCENR |= RCC_APB1Periph_TIM2;
         RCC->APB2PCENR |= RCC_APB2Periph_AFIO;
 
+        TIM_Cmd(TIM2, DISABLE);
+
         GPIO_Setup(GPIO_PORT_SNS_TX, GPIO_PIN_SNS_TX, GPIO_OUT_AF_PP_10MHZ);
 
         {
             TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure;
-            TIM_TimeBaseInitStructure.TIM_Period = 10;
-            TIM_TimeBaseInitStructure.TIM_Prescaler = 47;
+            memset(&TIM_TimeBaseInitStructure, 0, sizeof(TIM_TimeBaseInitStructure));
+            TIM_TimeBaseInitStructure.TIM_Period = 65535;
+            TIM_TimeBaseInitStructure.TIM_Prescaler = 65535;
             TIM_TimeBaseInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
             TIM_TimeBaseInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
-            TIM_TimeBaseInitStructure.TIM_RepetitionCounter = 0;
             TIM_TimeBaseInit(TIM2, &TIM_TimeBaseInitStructure);
         }
 
         {
             TIM_OCInitTypeDef TIM_OCInitStructure;
+            memset(&TIM_OCInitStructure, 0, sizeof(TIM_OCInitStructure));
             TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1;
             TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
-            TIM_OCInitStructure.TIM_OutputNState = TIM_OutputState_Disable;
-            TIM_OCInitStructure.TIM_Pulse = 1;
-            TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_Low;
-            TIM_OCInitStructure.TIM_OCNPolarity = TIM_OCPolarity_High;
-            TIM_OCInitStructure.TIM_OCIdleState = TIM_OCIdleState_Reset;
-            TIM_OCInitStructure.TIM_OCNIdleState = TIM_OCIdleState_Reset;
+            TIM_OCInitStructure.TIM_Pulse = 4;
+            TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
             TIM_OC2Init(TIM2, &TIM_OCInitStructure);
         }
 
@@ -513,6 +502,8 @@ namespace
         RCC->APB2PCENR |= RCC_APB2Periph_GPIOD | RCC_APB2Periph_TIM1;
 
         GPIO_Setup(GPIO_PORT_SNS_RX, GPIO_PIN_SNS_RX, GPIO_IN_FLOATING);
+
+        TIM_Cmd(TIM1, DISABLE);
 
         {
             TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure;
@@ -543,12 +534,9 @@ namespace
             NVIC_Init(&NVIC_InitStructure);
         }
 
-        TIM_ITConfig(TIM1, TIM_IT_CC1 | TIM_IT_CC2, ENABLE);
-
         TIM_SelectInputTrigger(TIM1, TIM_TS_TI1FP1);
         TIM_SelectSlaveMode(TIM1, TIM_SlaveMode_Reset);
         TIM_SelectMasterSlaveMode(TIM1, TIM_MasterSlaveMode_Enable);
-        TIM_Cmd(TIM1, ENABLE);
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -807,8 +795,6 @@ extern "C" int main()
 
                 if((!button.held || (payload.flags & ch32_flag_factory_reset) != 0) && state_elapsed_ticks() > 10) {
 
-                    got_readings = 0;
-
                     payload.distance = 0;
                     payload.vbat = 0;
 
@@ -852,10 +838,9 @@ extern "C" int main()
 
                     // stuff it into the SPI payload
                     payload.vbat = vbat_reading;
-                    debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
                     vbat_status = status_idle;
-                    got_readings |= got_reading_vbat;
 
+                    debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
                     // switch on the 5V rail for level shifter, distance sensor
                     GPIO_Clear(GPIO_PORT_5VSW, GPIO_MASK_5VSW);
 
@@ -863,7 +848,7 @@ extern "C" int main()
                     num_distance_readings = 0;
                     distance_timer.reset();
                     distance_status = status_idle;
-                    distance_delay = 50;
+                    distance_delay = 60;
                     led_on();
                     set_state(state_read_distance);
                 }
@@ -887,13 +872,21 @@ extern "C" int main()
                     if(distance_timer.elapsed() > distance_delay) {
 
                         distance_status = status_in_progress;
-                        TIM_Cmd(TIM2, ENABLE);
+                        distance_value = 0;
+
+                        TIM1->INTFR = 0;
+                        TIM1->DMAINTENR |= TIM_IT_CC1 | TIM_IT_CC2;
+                        TIM1->CTLR1 |= TIM_CEN;
+
+                        TIM2->SWEVGR = TIM_UG;
+                        TIM2->CTLR1 |= TIM_CEN;
+
                         distance_delay = 2;
                     }
 
                 } else if(distance_status == status_complete) {
 
-                    debug("DISTANCE[%d] = %d [0x%04x]\n", num_distance_readings, distance_value, distance_value);
+                    debug("DISTANCE[%d] = %d\n", num_distance_readings, distance_value);
 
                     num_distance_readings += 1;
 
@@ -912,7 +905,7 @@ extern "C" int main()
                     }
                 }
 
-                if(((payload.flags & ch32_flag_error_reading_distance) !=0 ) || elapsed > 500 || payload.distance != 0) {
+                if(payload.distance != 0 || ((payload.flags & ch32_flag_error_reading_distance) !=0 ) || elapsed > 200) {
 
                     // switch off the blasted led for sure
                     led_off();
@@ -920,8 +913,12 @@ extern "C" int main()
                     // finalize the spi payload
                     init_message<ch32_reading_payload_t>(&tx_msg);
 
-                    // switch on ESP, start listening for it on SPI_CS
+#if defined(DEBUG_NO_ESP)
+                    set_state(state_done);
+#else
+                    // start listening for ESP on SPI_CS
                     set_state(state_wait_for_esp);
+#endif
                 }
 
             }
@@ -1020,9 +1017,12 @@ extern "C" int main()
                     } else {
                         debug("No sleep count, keeping %d\n", sleep_count);
                     }
+#if defined(DEBUG_NO_ESP)
+                    sleep_count = 1;
+#endif
                     debug("DONE Sleeping for %d\n", sleep_count);
                     flush_printf();
-                    sleep(sleep_count);    // should be about 6 hours
+                    sleep(sleep_count);// should be about 6 hours
                 }
             }
             break;
