@@ -65,17 +65,17 @@
 namespace
 {
     int constexpr MAX_VALID_DISTANCE = 5000;                // any distance reading > this is invalid
-    int constexpr MAX_DISTANCE_TRIES = 5;                   // try to get a valid distance reading this many times
-    int constexpr FACTORY_RESET_BUTTON_TIME_MS = 5000;      // hold button for this many ms to factory reset
-    int constexpr ESP_POWER_OFF_TIME_MS = 250;              // power cycle ESP for this many ms
-    int constexpr ESP_CRASHED_TIMEOUT_MS = 20000;           // give ESP this many ms to send it else reboot it
-    int constexpr SLEEP_DELAY_TICKS = 1;                    // pause for this many ticks (ms) before going to sleep
-
+    int constexpr MAX_DISTANCE_TRIES = 2;                   // try to get a valid distance reading this many times
+    int constexpr FACTORY_RESET_BUTTON_TIME_MS = 5000;      // hold button for this long to factory reset
+    int constexpr ESP_POWER_OFF_TIME_MS = 250;              // power off ESP for this long when it fails to boot or send
+    int constexpr ESP_CRASHED_TIMEOUT_MS = 20000;           // give ESP this long send it else reboot it
+    int constexpr SLEEP_DELAY_MS = 1;                       // pause before going to sleep
+    int constexpr VBAT_READ_DELAY_MS = 2;                   // pause before reading vbat
+    int constexpr ESP_BOOT_TIMEOUT_MS = 5000;               // wait this long for ESP to boot after power up
 
     enum state_t
     {
-        state_boot = 0,
-        state_factory_reset,
+        state_factory_reset = 0,
         state_read_vbat,
         state_read_distance,
         state_wait_for_esp,
@@ -88,7 +88,6 @@ namespace
 #if defined(DEBUG_PRINTF)
     char const *state_name[state_num] =
     {
-                    "boot",
                     "factory_reset",
                     "read_vbat",
                     "read_distance",
@@ -169,7 +168,7 @@ namespace
 
     // main system state
 
-    state_t state = state_boot;
+    state_t state;
     uint32 state_start_ticks;
 
     // status of some peripheral handlers
@@ -348,7 +347,6 @@ namespace
         standby_boot += 1;
 
         user_init();
-
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -813,9 +811,19 @@ namespace
 
         button_held_timer.reset();
 
+        state_start_ticks = 0;
         ticks = 0;
 
-        set_state(state_boot);
+        payload.distance = 0;
+        payload.vbat = 0;
+
+        vbat_status = status_idle;
+        vbat_timer.reset();
+
+        button.released = 0;
+        button.pressed = 0;
+
+        set_state(state_read_vbat);
     }
 }
 
@@ -848,23 +856,6 @@ extern "C" int main()
         {
             ////////////////////////////////////////
 
-            case state_boot:
-            {
-                payload.distance = 0;
-                payload.vbat = 0;
-
-                vbat_status = status_idle;
-                vbat_timer.reset();
-
-                button.released = 0;
-                button.pressed = 0;
-
-                set_state(state_read_vbat);
-            }
-            break;
-
-            ////////////////////////////////////////
-
             case state_factory_reset:
             {
                 if(elapsed < 1000 || button.held) {
@@ -889,7 +880,7 @@ extern "C" int main()
             case state_read_vbat:
             {
                 // give power 5 ms to stabilize before reading vbat
-                if(vbat_status == status_idle && elapsed > 5) {
+                if(vbat_status == status_idle && elapsed > VBAT_READ_DELAY_MS) {
 
                     // kick off vbat read
                     vbat_status = status_in_progress;
@@ -999,7 +990,7 @@ extern "C" int main()
                     set_state(state_esp);
 
                     // ESP boot timeout, power cycle it in desperation
-                } else if(elapsed > 5000) {
+                } else if(elapsed > ESP_BOOT_TIMEOUT_MS) {
 
                     power_set(power_off);
                     set_state(state_reboot_esp);
@@ -1071,7 +1062,7 @@ extern "C" int main()
 
             case state_done:
             {
-                if(elapsed > SLEEP_DELAY_TICKS && !button.held) {
+                if(elapsed > SLEEP_DELAY_MS && !button.held) {
 
                     if(rx_payload.sleep_count != 0) {
                         sleep_count = rx_payload.sleep_count;
