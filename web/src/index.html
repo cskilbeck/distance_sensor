@@ -1,8 +1,11 @@
 <!doctype html>
 <html  data-bs-theme="dark">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-4bw+/aepP/YC94hEpVNVgiZdgIC5+VKNBQNGCHeKRQN+PtmoHDEXuppvnDJzQIu9" crossorigin="anonymous">
+  <link href="style.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js" integrity="sha384-HwwvtgBNo3bZJJLYd8oVXjrBZt8cqVSpeBNS5n7C8IVInixGAoxmnlMuBnhbgrkm" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="graph.js" defer></script>
   <head>
     <title>Salt Sensor Graphs</title>
   </head>
@@ -18,13 +21,20 @@
           <div class="d-flex justify-content-center">
             <div class="btn-toolbar pagination-centered">
               <div class="input-group input-group-sm w-auto">
-                <span class="input-group-text">Device</span>
-                <input id="device_address" type="text" class="form-control" placeholder="84f3eb536123" aria-label="Device" aria-describedby="basic-addon1">
+                <span class="input-group-text dropdown dropdown-toggle btn btn-sm btn-info" id="dropdownMenuButton" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    Device
+                </span>
+                <div id="dropdown_device_items" class="dropdown-menu" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
+                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
+                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
+                </div>
+                <input id="device_address" type="text" class="form-control text-info" placeholder="84f3eb536123" aria-label="Device" aria-describedby="basic-addon1" disabled>
               </div>
-              <div class="w-auto mx-2">
-                <button class="btn btn-sm btn-primary" onclick="show_graph(0)">distance</button>
-                <button class="btn btn-sm btn-primary" onclick="show_graph(1)">battery</button>
-                <button class="btn btn-sm btn-primary" onclick="show_graph(2)">wifi</button>
+              <div class="w-auto mx-3">
+                <button id="button0" class="btn btn-sm btn-distance mx-1" onclick="show_graph('0')">distance</button>
+                <button id="button1" class="btn btn-sm btn-vbat mx-1" onclick="show_graph('1')">battery</button>
+                <button id="button2" class="btn btn-sm btn-wifi mx-1" onclick="show_graph('2')">wifi</button>
               </div>
             </div>
           </div>
@@ -35,5 +45,4 @@
       <canvas id="graph"></canvas>
     </div>
   </body>
-  <script src="graph.js"></script>
 </html>

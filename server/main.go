@@ -27,7 +27,15 @@ import (
 // Settings to send back to gadget
 
 type sensorSettings struct {
-	Sleep_count int `json:"sleep_count"`
+	SleepCount int `json:"sleep_count"`
+}
+
+//////////////////////////////////////////////////////////////////////
+// Device identifier
+
+type device struct {
+	Address string `json:"address"` // mac address
+	Name    string `json:"name"`    // user defined name
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -57,7 +65,10 @@ type getReadingsResponse struct {
 
 //////////////////////////////////////////////////////////////////////
 
-type routeHandler = func(w http.ResponseWriter, r *http.Request, params httprouter.Params)
+type getDevicesResponse struct {
+	Rows   int      `json:"rows"`   // # of results
+	Device []device `json:"device"` // devices
+}
 
 //////////////////////////////////////////////////////////////////////
 // Database credentials
@@ -89,7 +100,7 @@ var logLevelNames = [numLogLevels]string{
 	"fatal",
 }
 
-var logLevel = logLevelInfo
+var logLevel = logLevelInfo // default log level is info
 
 type loggers struct {
 	Debug   *log.Logger
@@ -127,7 +138,7 @@ func longestStringLength(s []string) int {
 //////////////////////////////////////////////////////////////////////
 // setup log level by name
 
-func setLogLevel(log_level_name string) (e error) {
+func setupLogging(log_level_name string) (e error) {
 
 	log_writers := [numLogLevels]io.Writer{
 		os.Stdout,
@@ -140,13 +151,11 @@ func setLogLevel(log_level_name string) (e error) {
 
 	longest_name := longestStringLength(logLevelNames[:])
 
-	// find the log level by name if they asked for one
+	// find the log level by name
 
-	found := true
+	found := false
 
 	if len(log_level_name) != 0 {
-
-		found = false
 
 		for i, name := range logLevelNames {
 
@@ -339,6 +348,8 @@ func parseQueryParamTime(name string, values url.Values) (time.Time, error) {
 
 //////////////////////////////////////////////////////////////////////
 
+type routeHandler = func(w http.ResponseWriter, r *http.Request, params httprouter.Params)
+
 func logged(h routeHandler) routeHandler {
 
 	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
@@ -346,6 +357,24 @@ func logged(h routeHandler) routeHandler {
 		logger.Verbose.Printf("%s %s", r.Method, r.URL)
 		h(w, r, params)
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func openDatabase(w http.ResponseWriter) (*sql.DB, error) {
+
+	var err error
+	var db *sql.DB
+
+	if db, err = sql.Open("mysql", dbDSNString); err != nil {
+
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+		return nil, err
+	}
+
+	logger.Debug.Println("Database opened")
+
+	return db, nil
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -386,21 +415,20 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	var db *sql.DB
 
-	if db, err = sql.Open("mysql", dbDSNString); err != nil {
-
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+	if db, err = openDatabase(w); err != nil {
 		return
 	}
-
-	logger.Debug.Println("Database opened")
-
 	defer db.Close()
+
+	// get the device_id
 
 	var device_id int64
 
 	device_address := fmt.Sprintf("%012x", device)
 
-	if err = db.QueryRow(`SELECT device_id FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+	if err = db.QueryRow(`SELECT device_id
+							FROM devices
+							WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
 
 		if err == sql.ErrNoRows {
 			respondError(w, http.StatusBadRequest, fmt.Sprintf("Device %s not found", device_address))
@@ -410,10 +438,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	logger.Debug.Printf("Device ID %d", device_id)
 
-	if len(errors) != 0 {
-		respondError(w, http.StatusBadRequest, errors...)
-		return
-	}
+	// get the readings
 
 	logger.Debug.Printf("From: %s, To: %s", from.Format(time.RFC3339), to.Format(time.RFC3339))
 
@@ -441,6 +466,8 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 		return
 	}
 
+	// put the readings in an object for json output response
+
 	response := getReadingsResponse{}
 
 	rows := 0
@@ -462,11 +489,55 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 			response.Rssi = append(response.Rssi, rssi)
 			rows += 1
 		}
-		logger.Debug.Printf("Fetched %d rows", rows)
+	}
+	logger.Debug.Printf("Fetched %d rows", rows)
+	response.Rows = rows
+	sendResponse(w, http.StatusOK, &response)
+}
+
+//////////////////////////////////////////////////////////////////////
+// get all the devices
+
+func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	// open the database
+
+	var err error
+
+	var db *sql.DB
+
+	if db, err = openDatabase(w); err != nil {
+		return
+	}
+	defer db.Close()
+
+	// get the devices
+
+	var query *sql.Rows
+
+	if query, err = db.Query(`SELECT device_address, IFNULL(device_name, '-') FROM devices`); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
-	response.Rows = rows
+	// put the devices in an object for json output response
 
+	response := getDevicesResponse{}
+
+	rows := 0
+
+	for query.Next() {
+		var addr string
+		var name string
+		if err = query.Scan(&addr, &name); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		rows += 1
+		response.Device = append(response.Device, device{Address: addr, Name: name})
+	}
+	logger.Debug.Printf("Fetched %d rows", rows)
+	response.Rows = rows
 	sendResponse(w, http.StatusOK, &response)
 }
 
@@ -515,18 +586,11 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	logger.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
 
-	// open the database
-
 	var db *sql.DB
 
-	if db, err = sql.Open("mysql", dbDSNString); err != nil {
-
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+	if db, err = openDatabase(w); err != nil {
 		return
 	}
-
-	logger.Debug.Println("Database opened")
-
 	defer db.Close()
 
 	// get device id or insert new device
@@ -539,13 +603,17 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 	var sleep_count int
 	var insert sql.Result
 
-	if err = db.QueryRow(`SELECT device_id, sleep_count FROM devices WHERE device_address = ?;`, device_address).Scan(&device_id, &sleep_count); err != nil {
+	if err = db.QueryRow(`SELECT
+							device_id, sleep_count
+							FROM devices
+							WHERE device_address = ?;`, device_address).Scan(&device_id, &sleep_count); err != nil {
 
 		if err == sql.ErrNoRows {
 
 			logger.Info.Printf("New device: %s", device_address)
 
-			if insert, err = db.Exec(`INSERT INTO devices (device_address) VALUES (?)`, device_address); err == nil {
+			if insert, err = db.Exec(`INSERT INTO devices
+										(device_address) VALUES (?)`, device_address); err == nil {
 
 				device_id, err = insert.LastInsertId()
 			}
@@ -563,7 +631,8 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	var reading_id int64
 
-	if insert, err = db.Exec(`INSERT INTO readings (device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
+	if insert, err = db.Exec(`INSERT INTO readings
+								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
                                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags, rssi); err == nil {
 
 		reading_id, err = insert.LastInsertId()
@@ -576,9 +645,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	logger.Debug.Printf("Reading ID %d", reading_id)
 
-	// done
-
-	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{Sleep_count: sleep_count}})
+	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleep_count}})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -598,27 +665,29 @@ func main() {
 	flag.StringVar(&log_level_name, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
 	flag.Parse()
 
-	// check command line parameters
+	// check command line parameters, setup logging and database credentials
 
 	errs := make([]error, 0)
 
-	if err := setLogLevel(log_level_name); err != nil {
-		errs = append(errs, err)
+	if len(log_level_name) == 0 {
+		errs = append(errs, fmt.Errorf("missing -log_level"))
 	}
 
 	if len(key_filename) == 0 {
-		errs = append(errs, fmt.Errorf("missing key_filename"))
+		errs = append(errs, fmt.Errorf("missing -key"))
 	}
 
 	if len(cert_filename) == 0 {
-		errs = append(errs, fmt.Errorf("missing cert_filename"))
+		errs = append(errs, fmt.Errorf("missing -cert"))
 	}
 
 	if len(credentials_filename) == 0 {
-		errs = append(errs, fmt.Errorf("missing credentials_filename"))
+		errs = append(errs, fmt.Errorf("missing -credentials"))
 	}
 
-	// load database credentials
+	if err := setupLogging(log_level_name); err != nil {
+		errs = append(errs, err)
+	}
 
 	if err := loadJSON[credentials](credentials_filename, &dbCredentials); err != nil {
 		errs = append(errs, err)
@@ -639,7 +708,7 @@ func main() {
 	// startup ok, here we go
 
 	logger.Info.Println()
-	logger.Info.Printf("<<<<<<<<<< SALT SENSOR SERVICE BEGINS >>>>>>>>>>")
+	logger.Info.Printf("########## SALT SENSOR SERVICE BEGINS ##########")
 
 	logger.Verbose.Printf("Log level: %s", logLevelNames[logLevel])
 	logger.Verbose.Printf("Credentials file: %s", credentials_filename)
@@ -648,7 +717,10 @@ func main() {
 
 	// database config
 
-	cfg := mysql.Config{
+	logger.Debug.Printf("Database is '%s'", dbCredentials.Password)
+	logger.Debug.Printf("Username is '%s'", dbCredentials.Username)
+
+	dbDSNString = (&mysql.Config{
 		User:                 dbCredentials.Username,
 		Passwd:               dbCredentials.Password,
 		Net:                  "tcp",
@@ -656,12 +728,7 @@ func main() {
 		DBName:               "salt_sensor",
 		AllowNativePasswords: true,
 		ParseTime:            true,
-	}
-
-	logger.Debug.Printf("Database is '%s'", cfg.DBName)
-	logger.Debug.Printf("Username is '%s'", cfg.User)
-
-	dbDSNString = cfg.FormatDSN()
+	}).FormatDSN()
 
 	// HTTP server
 
@@ -678,6 +745,7 @@ func main() {
 	https_router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
 
 	https_router.GET("/readings", logged(getReadings))
+	https_router.GET("/devices", logged(getDevices))
 
 	// run them both
 

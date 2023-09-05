@@ -1,0 +1,64 @@
+.btn-distance {
+    color: #FFFFFF;
+    background-color: #209020;
+    opacity: 30%;
+    border-color: #000000;
+}
+
+.btn-distance:hover {
+    color: #ffffff;
+    background-color: #32CD32;
+    border-color: #000000;
+    opacity: 100%;
+}
+
+.btn-distance:focus,
+.btn-distance:active,
+.btn-distance.highlighted,
+.btn-distance.active {
+    color: #FFFFFF;
+    background-color: #209020;
+    opacity: 100%;
+}
+
+.btn-vbat {
+    color: #FFFFFF;
+    background-color: #904000;
+    opacity: 30%;
+}
+
+.btn-vbat:hover {
+    color: #ffffff;
+    background-color: #FF9C00;
+    opacity: 100%;
+}
+
+.btn-vbat:focus,
+.btn-vbat:active,
+.btn-vbat.highlighted,
+.btn-vbat.active {
+    color: #FFFFFF;
+    background-color: #904000;
+    opacity: 100%;
+}
+
+.btn-wifi {
+    color: #FFFFFF;
+    background-color: #3050D0;
+    opacity: 30%;
+}
+
+.btn-wifi:hover {
+    color: #ffffff;
+    background-color: #50A0FF;
+    opacity: 100%;
+}
+
+.btn-wifi:focus,
+.btn-wifi:active,
+.btn-wifi.highlighted,
+.btn-wifi.active {
+    color: #FFFFFF;
+    background-color: #3050D0;
+    opacity: 100%;
+}
