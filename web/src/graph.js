@@ -8,13 +8,12 @@ var host = "vibue.com";
 
 function date_format(x) {
 
-    return new Date(x).toLocaleString('en-GB', {
+    return new Date(x).toLocaleString('en-US', {
 
         day: 'numeric',
         month: 'short',
         hour: 'numeric',
-        minute: 'numeric',
-        timezone: 'UTC'
+        minute: 'numeric'
     });
 }
 

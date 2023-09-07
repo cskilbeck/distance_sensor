@@ -1,7 +1,7 @@
 .btn-distance {
     color: #FFFFFF;
     background-color: #209020;
-    opacity: 30%;
+    opacity: 20%;
     border-color: #000000;
 }
 
@@ -18,13 +18,15 @@
 .btn-distance.active {
     color: #FFFFFF;
     background-color: #209020;
+    border-color: #000000;
     opacity: 100%;
+    border-color: #000000;
 }
 
 .btn-vbat {
     color: #FFFFFF;
     background-color: #904000;
-    opacity: 30%;
+    opacity: 20%;
 }
 
 .btn-vbat:hover {
@@ -45,7 +47,7 @@
 .btn-wifi {
     color: #FFFFFF;
     background-color: #3050D0;
-    opacity: 30%;
+    opacity: 20%;
 }
 
 .btn-wifi:hover {
