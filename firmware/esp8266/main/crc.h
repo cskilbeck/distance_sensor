@@ -41,25 +41,29 @@ struct ch32_reading_payload_t
 {
     static uint8_t constexpr id = msg_id_ch32_readings;
 
-    uint16_t vbat;
-    uint16_t distance;
+    uint16_t vbat;          // raw vbat adc reading
+    uint16_t distance;      // distance reading
     union
     {
         struct
         {
-            uint16_t ch32_flag_factory_reset :1;
-            uint16_t ch32_flag_error_reading_vbat :1;
-            uint16_t ch32_flag_error_reading_distance :1;
-            uint16_t ch32_flag_button_boot :1;
+            uint16_t ch32_flag_factory_reset : 1;
+            uint16_t ch32_flag_got_vbat :1;
+            uint16_t ch32_flag_got_distance :1;
+            uint16_t ch32_flag_error_reading_vbat : 1;
+            uint16_t ch32_flag_error_reading_distance : 1;
+            uint16_t ch32_flag_button_boot : 1;
         };
         uint16_t flags;
     };
+    uint16_t resolution;
 };
 
 static constexpr uint32_t ch32_flag_factory_reset = 1 << 0;
-static constexpr uint32_t ch32_flag_error_reading_vbat = 1 << 1;
-static constexpr uint32_t ch32_flag_error_reading_distance = 1 << 2;
-static constexpr uint32_t ch32_flag_error_distance_invalid = 1 << 3;
+static constexpr uint32_t ch32_flag_got_vbat = 1 << 1;
+static constexpr uint32_t ch32_flag_got_distance = 1 << 2;
+static constexpr uint32_t ch32_flag_error_reading_vbat = 1 << 3;
+static constexpr uint32_t ch32_flag_error_reading_distance = 1 << 4;
 static constexpr uint32_t ch32_flag_button_boot = 1 << 4;
 
 //////////////////////////////////////////////////////////////////////

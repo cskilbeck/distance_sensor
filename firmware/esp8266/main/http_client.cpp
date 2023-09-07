@@ -90,7 +90,7 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-esp_err_t http_request(esp_http_client_method_t method, char const *url, char *response_buffer, size_t *response_buffer_size)
+esp_err_t http_request(esp_http_client_method_t method, char const *url, int *response_code, char *response_buffer, size_t *response_buffer_size)
 {
     char const *TAG = "http_request";
 
@@ -111,7 +111,8 @@ esp_err_t http_request(esp_http_client_method_t method, char const *url, char *r
     if(err == ESP_OK) {
 
         *response_buffer_size = esp_http_client_get_content_length(client);
-        ESP_LOGI(TAG, "Status = %d, content_length = %d", esp_http_client_get_status_code(client), *response_buffer_size);
+        *response_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "Status = %d, content_length = %d", *response_code, *response_buffer_size);
         ESP_LOGI(TAG, "Response: %s", response_buffer);
 
     } else {

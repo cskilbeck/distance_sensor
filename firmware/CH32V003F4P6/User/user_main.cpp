@@ -22,7 +22,7 @@
 
 // log printf statements
 
-#define DEBUG_PRINTF
+// #define DEBUG_PRINTF
 
 // don't talk to the ESP
 
@@ -30,7 +30,7 @@
 
 // ignore server sleep_count, use this instead (also makes time per sleep_count shorter - ~2 seconds instead of ~30)
 
-#define DEBUG_OVERRIDE_SLEEP_COUNT 10
+// #define DEBUG_OVERRIDE_SLEEP_COUNT 2
 
 // button press puts it to sleep
 
@@ -64,14 +64,25 @@
 
 namespace
 {
-    int constexpr MAX_VALID_DISTANCE = 5000;                // any distance reading > this is invalid
-    int constexpr MAX_DISTANCE_TRIES = 2;                   // try to get a valid distance reading this many times
+    int constexpr SYS_CLOCK = 48000000;
+
+    int constexpr MAX_VALID_DISTANCE = 40000;               // any distance reading > this is invalid
+    int constexpr MAX_DISTANCE_TRIES = 3;                   // try to get a valid distance reading this many times
     int constexpr FACTORY_RESET_BUTTON_TIME_MS = 5000;      // hold button for this long to factory reset
     int constexpr ESP_POWER_OFF_TIME_MS = 250;              // power off ESP for this long when it fails to boot or send
     int constexpr ESP_CRASHED_TIMEOUT_MS = 20000;           // give ESP this long send it else reboot it
     int constexpr SLEEP_DELAY_MS = 1;                       // pause before going to sleep
     int constexpr VBAT_READ_DELAY_MS = 2;                   // pause before reading vbat
     int constexpr ESP_BOOT_TIMEOUT_MS = 5000;               // wait this long for ESP to boot after power up
+    int constexpr SENSOR_BOOT_DELAY = 100;                  // wait this long for ESP to boot after power up
+
+    int constexpr DISTANCE_COUNTER_HZ = 8000000;            // distance counter Hz
+
+    // set counter prescaler to (DISTANCE_TIMER_SCALE - 1)
+
+    uint16 constexpr DISTANCE_TIMER_SCALE = (static_cast<uint16_t>(SYS_CLOCK / DISTANCE_COUNTER_HZ));
+
+    static_assert((SYS_CLOCK % DISTANCE_COUNTER_HZ) == 0, "DISTANCE_RESOLUTION must divide exactly into SYS_CLOCK");
 
     enum state_t
     {
@@ -106,17 +117,6 @@ namespace
         status_idle,
         status_in_progress,
         status_complete
-    };
-
-    //////////////////////////////////////////////////////////////////////
-    // what readings have been got so far
-
-    enum readings_t
-        : uint32
-    {
-        got_reading_vbat = 1,
-        got_reading_distance = 2,
-        got_reading_all = 3
     };
 
     //////////////////////////////////////////////////////////////////////
@@ -203,8 +203,6 @@ namespace
     volatile uint32 distance_value;
     stopwatch_t distance_timer;
     int distance_delay;
-
-    //
 
     volatile uint16 vbat_reading;
     stopwatch_t vbat_timer;
@@ -523,7 +521,7 @@ namespace
         {
             TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure;
             TIM_TimeBaseInitStructure.TIM_Period = 0xffff;
-            TIM_TimeBaseInitStructure.TIM_Prescaler = 289;
+            TIM_TimeBaseInitStructure.TIM_Prescaler = DISTANCE_TIMER_SCALE - 1;
             TIM_TimeBaseInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
             TIM_TimeBaseInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
             TIM_TimeBaseInitStructure.TIM_RepetitionCounter = 0x00;
@@ -820,6 +818,12 @@ namespace
         vbat_status = status_idle;
         vbat_timer.reset();
 
+        payload.ch32_flag_got_distance = 0;
+        payload.ch32_flag_got_vbat = 0;
+        payload.ch32_flag_error_reading_distance = 0;
+        payload.ch32_flag_error_reading_vbat = 0;
+        payload.ch32_flag_factory_reset = 0;
+
         button.released = 0;
         button.pressed = 0;
 
@@ -868,6 +872,7 @@ extern "C" int main()
                     payload.ch32_flag_factory_reset = 1;
                     payload.distance = 0;
                     payload.vbat = 0;
+                    payload.resolution = DISTANCE_TIMER_SCALE;
                     init_message<ch32_reading_payload_t>(&tx_msg);
                     power_set(power_off);
                     set_state(state_reboot_esp);
@@ -892,6 +897,7 @@ extern "C" int main()
 
                     // stuff it into the SPI payload
                     payload.vbat = vbat_reading;
+                    payload.ch32_flag_got_vbat = 1;
                     vbat_status = status_idle;
 
                     debug("VBAT: %d (0x%04x)\n", vbat_reading, vbat_reading);
@@ -903,7 +909,7 @@ extern "C" int main()
                     num_distance_readings = 0;
                     distance_timer.reset();
                     distance_status = status_idle;
-                    distance_delay = 60;
+                    distance_delay = SENSOR_BOOT_DELAY;
                     led_on();
                     set_state(state_read_distance);
                 }
@@ -934,7 +940,7 @@ extern "C" int main()
                         TIM2->SWEVGR = TIM_UG;
                         TIM2->CTLR1 |= TIM_CEN;
 
-                        distance_delay = 2;
+                        distance_delay = 5;
                     }
 
                 } else if(distance_status == status_complete) {
@@ -946,6 +952,7 @@ extern "C" int main()
                     if(distance_value != 0 && distance_value <= MAX_VALID_DISTANCE) {
 
                         payload.distance = distance_value;
+                        payload.ch32_flag_got_distance = 1;
 
                     } else if(num_distance_readings < MAX_DISTANCE_TRIES) {
 
@@ -954,16 +961,22 @@ extern "C" int main()
 
                     } else {
 
+                        payload.distance = 0;
                         payload.ch32_flag_error_reading_distance = 1;
                     }
                 }
 
-                if(payload.distance != 0 || payload.ch32_flag_error_reading_distance || elapsed > 200) {
+                if(elapsed > 500) {
+                    payload.ch32_flag_error_reading_distance = 1;
+                }
+
+                if(payload.ch32_flag_got_distance || payload.ch32_flag_error_reading_distance) {
 
                     // switch off the blasted led for sure
                     led_off();
 
                     // finalize the spi payload
+                    payload.resolution = DISTANCE_TIMER_SCALE;
                     init_message<ch32_reading_payload_t>(&tx_msg);
 
 #if defined(DEBUG_NO_ESP)

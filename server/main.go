@@ -556,6 +556,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 	var device uint64
 	var flags uint64
 	var rssi int64
+	var resolution int64
 
 	q := r.URL.Query()
 
@@ -579,12 +580,24 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 		errors = append(errors, err.Error())
 	}
 
+	if resolution, err = parseQueryParamSigned("resolution", 10, 32, q); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	if len(errors) != 0 {
 		respondError(w, http.StatusBadRequest, errors...)
 		return
 	}
 
-	logger.Debug.Printf("vbat: %d, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, distance, flags, device, rssi)
+	// counter counts at this many per second (eg 8000000)
+
+	time_scale := 48000000.0 / float32(resolution)
+
+	const speed_of_sound_mm_per_sec = 346000.0
+
+	distance_mm := int32(float32(distance) / time_scale * speed_of_sound_mm_per_sec / 2.0)
+
+	logger.Verbose.Printf("vbat: %d, reading: %d, flags: %d, device: %012x, rssi: %d, distance: %d", vbat, distance, flags, device, rssi, distance_mm)
 
 	var db *sql.DB
 
@@ -633,7 +646,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	if insert, err = db.Exec(`INSERT INTO readings
 								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
-                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, device_id, vbat, distance, flags, rssi); err == nil {
+                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, device_id, vbat, distance_mm, flags, rssi); err == nil {
 
 		reading_id, err = insert.LastInsertId()
 	}

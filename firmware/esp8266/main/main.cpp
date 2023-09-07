@@ -221,19 +221,24 @@ extern "C" void app_main()
                         // send reading to the server
                         for(int tries = 0; tries < http_retries; ++tries) {
 
-                            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d";
+                            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d&resolution=%d";
 
                             static char url[256];
-                            sprintf(url, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr, wifi_rssi);
+                            sprintf(url, url_format, server_host, server_port, server_path, payload.vbat, payload.distance, payload.flags, mac_addr, wifi_rssi,
+                                    payload.resolution);
 
                             static char response_buffer[256];
 
                             static size_t response_size = sizeof(response_buffer);
 
-                            if(http_request(HTTP_METHOD_PUT, url, response_buffer, &response_size) == ESP_OK) {
+                            int response_code;
 
-                                read_settings(response_buffer);
+                            if(http_request(HTTP_METHOD_PUT, url, &response_code, response_buffer, &response_size) == ESP_OK) {
 
+
+                                if(response_code < 300) {
+                                    read_settings(response_buffer);
+                                }
                                 status.flags |= esp_status_sent_reading;
                                 break;
                             }
