@@ -19,6 +19,23 @@ const LaunchRequestHandler = {
     }
 };
 
+//////////////////////////////////////////////////////////////////////
+
+const LevelHandler = {
+    canHandle(handlerInput) {
+        const request = handlerInput.requestEnvelope.request;
+        return request.type === 'IntentRequest' &&
+            request.intent.name === 'level_intent';
+    },
+    async handle(handlerInput) {
+        const filledSlots = handlerInput.requestEnvelope.request.intent.slots;
+        const slotValues = getSlotValues(filledSlots);
+        let text = "The salt level is all sort of crazy"
+        return handlerInput.responseBuilder.speak(text).getResponse();
+    }
+};
+
+
 const HelloWorldIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
@@ -144,6 +161,7 @@ const ErrorHandler = {
 exports.handler = Alexa.SkillBuilders.custom()
     .addRequestHandlers(
         LaunchRequestHandler,
+        LevelHandler,
         HelloWorldIntentHandler,
         HelpIntentHandler,
         CancelAndStopIntentHandler,
