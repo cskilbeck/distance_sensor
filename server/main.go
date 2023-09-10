@@ -296,18 +296,12 @@ func checkParam(name string, values url.Values) (string, error) {
 
 //////////////////////////////////////////////////////////////////////
 
-func parseQueryParamInt[T int64 | uint64](name string, values url.Values, parser func(string) (T, error)) (T, error) {
+func parseQueryParamInt[T int64 | uint64](s string, name string, parser func(string) (T, error)) (T, error) {
 
-	param, err := checkParam(name, values)
-
-	if err != nil {
-		return 0, err
-	}
-
-	v, err := parser(param)
+	v, err := parser(s)
 
 	if err != nil {
-		return 0, fmt.Errorf("bad value for '%s' (%s)", name, err.Error())
+		return 0, fmt.Errorf("bad value '%s' (%s)", name, err.Error())
 	}
 
 	return v, nil
@@ -317,7 +311,13 @@ func parseQueryParamInt[T int64 | uint64](name string, values url.Values, parser
 
 func parseQueryParamUnsigned(name string, base int, bits int, values url.Values) (uint64, error) {
 
-	return parseQueryParamInt[uint64](name, values, func(s string) (uint64, error) {
+	param, err := checkParam(name, values)
+
+	if err != nil {
+		return 0, err
+	}
+
+	return parseQueryParamInt[uint64](param, name, func(s string) (uint64, error) {
 
 		return strconv.ParseUint(s, base, bits)
 	})
@@ -327,7 +327,13 @@ func parseQueryParamUnsigned(name string, base int, bits int, values url.Values)
 
 func parseQueryParamSigned(name string, base int, bits int, values url.Values) (int64, error) {
 
-	return parseQueryParamInt[int64](name, values, func(s string) (int64, error) {
+	param, err := checkParam(name, values)
+
+	if err != nil {
+		return 0, err
+	}
+
+	return parseQueryParamInt[int64](param, name, func(s string) (int64, error) {
 
 		return strconv.ParseInt(s, base, bits)
 	})
@@ -379,6 +385,11 @@ func openDatabase(w http.ResponseWriter) (*sql.DB, error) {
 
 //////////////////////////////////////////////////////////////////////
 // Get report of readings for time span
+// Inputs
+//	device=AABBCCDDEEFF		// device mac address (required)
+//	from=RFC3339			// readings from this time (optional, default = beginning of time)
+//	to=RFC3339				// readings from this time (optional, default = now + 24 hours (because timezones))
+//  count=uint16			// max # of readings to get (optional, default = 1000)
 
 func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
@@ -388,23 +399,45 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	var errors = make([]string, 0)
 
-	q := r.URL.Query()
+	queryParams := r.URL.Query()
 
-	var from time.Time
-	var to time.Time
+	// device is required
+
 	var device uint64
 
-	if device, err = parseQueryParamUnsigned("device", 16, 48, q); err != nil {
+	// these are optional with defaults
+
+	from := time.Time{}
+	to := time.Now().Add(time.Hour * 24)
+	count := uint64(1000)
+
+	// scan the parameters
+
+	if device, err = parseQueryParamUnsigned("device", 16, 48, queryParams); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if from, err = parseQueryParamTime("from", q); err != nil {
-		errors = append(errors, err.Error())
+	if len(queryParams["from"]) != 0 {
+		if from, err = parseQueryParamTime("from", queryParams); err != nil {
+			errors = append(errors, err.Error())
+		}
 	}
 
-	if to, err = parseQueryParamTime("to", q); err != nil {
-		errors = append(errors, err.Error())
+	if len(queryParams["to"]) != 0 {
+		if to, err = parseQueryParamTime("to", queryParams); err != nil {
+			errors = append(errors, err.Error())
+		}
 	}
+
+	if len(queryParams["count"]) != 0 {
+		if count, err = parseQueryParamUnsigned("count", 10, 16, queryParams); err != nil {
+			errors = append(errors, err.Error())
+		} else if count > 10000 {
+			errors = append(errors, fmt.Sprintf("count %d out of range, must be < 10000", count))
+		}
+	}
+
+	// send error(s) if anything wrong
 
 	if len(errors) != 0 {
 		respondError(w, http.StatusBadRequest, errors...)
@@ -420,48 +453,48 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 	}
 	defer db.Close()
 
-	// get the device_id
+	// get the device id
 
-	var device_id int64
+	var deviceId int64
 
-	device_address := fmt.Sprintf("%012x", device)
+	deviceAddress := fmt.Sprintf("%012x", device)
 
 	if err = db.QueryRow(`SELECT device_id
 							FROM devices
-							WHERE device_address = ?;`, device_address).Scan(&device_id); err != nil {
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceId); err != nil {
 
 		if err == sql.ErrNoRows {
-			respondError(w, http.StatusBadRequest, fmt.Sprintf("Device %s not found", device_address))
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("Device %s not found", deviceAddress))
 			return
 		}
 	}
 
-	logger.Debug.Printf("Device ID %d", device_id)
+	logger.Debug.Printf("Device ID %d", deviceId)
 
 	// get the readings
 
-	logger.Debug.Printf("From: %s, To: %s", from.Format(time.RFC3339), to.Format(time.RFC3339))
+	logger.Debug.Printf("From: %s, To: %s, Count: %d", from.Format(time.RFC3339), to.Format(time.RFC3339), count)
 
-	query_string := `SELECT
-						reading_timestamp, reading_vbat, reading_distance, reading_rssi
+	var sqlStatement *sql.Stmt
+
+	if sqlStatement, err = db.Prepare(`
+						SELECT reading_timestamp, reading_vbat, reading_distance, reading_rssi
 						FROM readings
 						WHERE device_id = ?
 							AND reading_timestamp >= ?
 							AND reading_timestamp <= ?
-						ORDER BY reading_timestamp ASC`
+						ORDER BY reading_timestamp DESC
+						LIMIT ?`); err != nil {
 
-	var stmt *sql.Stmt
-
-	if stmt, err = db.Prepare(query_string); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	defer stmt.Close()
+	defer sqlStatement.Close()
 
 	var query *sql.Rows
 
-	if query, err = stmt.Query(device_id, from.Format(time.RFC3339), to.Format(time.RFC3339)); err != nil {
+	if query, err = sqlStatement.Query(deviceId, from.Format(time.RFC3339), to.Format(time.RFC3339), count); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -542,6 +575,30 @@ func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params
 }
 
 //////////////////////////////////////////////////////////////////////
+// put a new reading
+// parameters:
+// vbat uint64			vbat in 100mV units (i.e. 843 = 8.43 volts)
+// distance uint64		distance in counter units (see resolution)
+// device uint64		device mac address in hex
+// flags uint64			flags for reference
+// rssi int64			WiFi strength in dBm
+// resolution int64		resolution of distance timer counter
+//
+// distance in mm is calculated as :
+// 48MHz / resolution = counter hertz (e.g. countscale = 8, 48mHz / 8 = 6MHz Counter Scale)
+// distance is in 'counter values', and should be halved because it's a reflection ping thing, so
+//
+// mm = counter_reading / 2 * (speed_of_sound_in_mm_per_sec) / counter_scale
+//
+// e.g. for
+// distance = 4025
+// resolution = 6
+// clock_speed = 48000000
+// speed_of_sound_in_mm_per_sec = 346000 mm/sec
+// distance / 2 = 2012.5
+// counter_scale = clock_speed (48000000) / resolution (6) = 8000000
+// unscaled_distance = distance / 2 (2012.5) * speed_of_sound_in_mm_per_sec (346000) = 696325000
+// final_distance = unscaled_distance (696325000) / counter_scale (8000000) = 87.04mm, call it 87
 
 func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
@@ -608,47 +665,47 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	// get device id or insert new device
 
-	device_address := fmt.Sprintf("%012x", device)
+	deviceAddress := fmt.Sprintf("%012x", device)
 
-	logger.Debug.Printf("Get device id for %s", device_address)
+	logger.Debug.Printf("Get device id for %s", deviceAddress)
 
-	var device_id int64
-	var sleep_count int
+	var deviceId int64
+	var sleepCount int
 	var insert sql.Result
 
 	if err = db.QueryRow(`SELECT
 							device_id, sleep_count
 							FROM devices
-							WHERE device_address = ?;`, device_address).Scan(&device_id, &sleep_count); err != nil {
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceId, &sleepCount); err != nil {
 
 		if err == sql.ErrNoRows {
 
-			logger.Info.Printf("New device: %s", device_address)
+			logger.Info.Printf("New device: %s", deviceAddress)
 
 			if insert, err = db.Exec(`INSERT INTO devices
-										(device_address) VALUES (?)`, device_address); err == nil {
+										(device_address) VALUES (?)`, deviceAddress); err == nil {
 
-				device_id, err = insert.LastInsertId()
+				deviceId, err = insert.LastInsertId()
 			}
 		}
 	}
 
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error adding device %s: %s", device_address, err.Error())
+		respondError(w, http.StatusInternalServerError, "Database error adding device %s: %s", deviceAddress, err.Error())
 		return
 	}
 
-	logger.Debug.Printf("Device ID %d", device_id)
+	logger.Debug.Printf("Device ID %d", deviceId)
 
 	// add the reading
 
-	var reading_id int64
+	var readingId int64
 
 	if insert, err = db.Exec(`INSERT INTO readings
 								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
-                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, device_id, vbat, distance_mm, flags, rssi); err == nil {
+                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, deviceId, vbat, distance_mm, flags, rssi); err == nil {
 
-		reading_id, err = insert.LastInsertId()
+		readingId, err = insert.LastInsertId()
 	}
 
 	if err != nil {
@@ -656,9 +713,19 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 		return
 	}
 
-	logger.Debug.Printf("Reading ID %d", reading_id)
+	logger.Debug.Printf("Reading ID %d", readingId)
 
-	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleep_count}})
+	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCount}})
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func makeRouter() *httprouter.Router {
+
+	router := httprouter.New()
+	router.NotFound = http.HandlerFunc(notFound)
+	router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
+	return router
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -667,42 +734,44 @@ func main() {
 
 	// command line parameters
 
-	var credentials_filename string
-	var key_filename string
-	var cert_filename string
-	var log_level_name string
+	var credentialsFilename string
+	var keyFilename string
+	var certFilename string
+	var logLevelName string
+	var httpOnly bool
 
-	flag.StringVar(&credentials_filename, "credentials", "", "Specify credentials filename (required)")
-	flag.StringVar(&key_filename, "key", "", "Specify TLS key filename (required)")
-	flag.StringVar(&cert_filename, "cert", "", "Specify TLS cert filename (required)")
-	flag.StringVar(&log_level_name, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
+	flag.StringVar(&credentialsFilename, "credentials", "", "Specify credentials filename (required)")
+	flag.StringVar(&keyFilename, "key", "", "Specify TLS key filename (required)")
+	flag.StringVar(&certFilename, "cert", "", "Specify TLS cert filename (required)")
+	flag.StringVar(&logLevelName, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
+	flag.BoolVar(&httpOnly, "http_only", false, "Only serve through HTTP:5002 (DEBUG ONLY)")
 	flag.Parse()
 
 	// check command line parameters, setup logging and database credentials
 
 	errs := make([]error, 0)
 
-	if len(log_level_name) == 0 {
+	if len(logLevelName) == 0 {
 		errs = append(errs, fmt.Errorf("missing -log_level"))
 	}
 
-	if len(key_filename) == 0 {
+	if len(keyFilename) == 0 && !httpOnly {
 		errs = append(errs, fmt.Errorf("missing -key"))
 	}
 
-	if len(cert_filename) == 0 {
+	if len(certFilename) == 0 && !httpOnly {
 		errs = append(errs, fmt.Errorf("missing -cert"))
 	}
 
-	if len(credentials_filename) == 0 {
+	if len(credentialsFilename) == 0 {
 		errs = append(errs, fmt.Errorf("missing -credentials"))
+	} else {
+		if err := loadJSON[credentials](credentialsFilename, &dbCredentials); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	if err := setupLogging(log_level_name); err != nil {
-		errs = append(errs, err)
-	}
-
-	if err := loadJSON[credentials](credentials_filename, &dbCredentials); err != nil {
+	if err := setupLogging(logLevelName); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -724,9 +793,17 @@ func main() {
 	logger.Info.Printf("########## SALT SENSOR SERVICE BEGINS ##########")
 
 	logger.Verbose.Printf("Log level: %s", logLevelNames[logLevel])
-	logger.Verbose.Printf("Credentials file: %s", credentials_filename)
-	logger.Verbose.Printf("Key file: %s", key_filename)
-	logger.Verbose.Printf("Cert file: %s", cert_filename)
+	logger.Verbose.Printf("Credentials file: %s", credentialsFilename)
+
+	if !httpOnly {
+
+		logger.Verbose.Printf("Key file: %s", keyFilename)
+		logger.Verbose.Printf("Cert file: %s", certFilename)
+
+	} else {
+
+		logger.Warning.Printf("NO HTTPS ENABLED - EVERYTHING SERVED THROUGH HTTP:5002!!!!")
+	}
 
 	// database config
 
@@ -743,30 +820,19 @@ func main() {
 		ParseTime:            true,
 	}).FormatDSN()
 
-	// HTTP server
+	// task admin
 
-	http_router := httprouter.New()
-	http_router.NotFound = http.HandlerFunc(notFound)
-	http_router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
+	var waitGroup sync.WaitGroup
 
-	http_router.PUT("/reading", logged(putReading))
+	taskCount := 2
 
-	// HTTPS server
+	if httpOnly {
+		taskCount = 1
+	}
 
-	https_router := httprouter.New()
-	https_router.NotFound = http.HandlerFunc(notFound)
-	https_router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
+	waitGroup.Add(taskCount)
 
-	https_router.GET("/readings", logged(getReadings))
-	https_router.GET("/devices", logged(getDevices))
-
-	// run them both
-
-	var wg sync.WaitGroup
-
-	wg.Add(2)
-
-	run_server := func(name string, listener func() error) {
+	runServer := func(name string, listener func() error) {
 
 		logger.Verbose.Printf("%s server starting", name)
 
@@ -778,18 +844,34 @@ func main() {
 		} else if err != nil {
 			logger.Error.Printf("Error starting %s server: %s", name, err.Error())
 		}
-		wg.Done()
+		waitGroup.Done()
 	}
 
-	go run_server("HTTP", func() error {
-		return http.ListenAndServe("0.0.0.0:5002", http_router)
+	// HTTP always available
+
+	httpRouter := makeRouter()
+
+	httpRouter.PUT("/reading", logged(putReading)) // PUT /reading only available via HTTP
+	httpRouter.GET("/readings", logged(getReadings))
+	httpRouter.GET("/devices", logged(getDevices))
+
+	go runServer("HTTP", func() error {
+		return http.ListenAndServe(":5002", httpRouter)
 	})
 
-	go run_server("HTTPS", func() error {
-		return http.ListenAndServeTLS(":443", cert_filename, key_filename, https_router)
-	})
+	if !httpOnly {
 
-	wg.Wait()
+		httpsRouter := makeRouter()
+
+		httpsRouter.GET("/readings", logged(getReadings))
+		httpsRouter.GET("/devices", logged(getDevices))
+
+		go runServer("HTTPS", func() error {
+			return http.ListenAndServeTLS(":443", certFilename, keyFilename, httpsRouter)
+		})
+	}
+
+	waitGroup.Wait()
 
 	logger.Info.Printf("---------- SALT SENSOR SERVICE ENDS ----------")
 }

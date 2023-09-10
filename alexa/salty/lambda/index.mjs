@@ -3,14 +3,92 @@
  * Please visit https://alexa.design/cookbook for additional examples on implementing slots, dialog management,
  * session persistence, api calls, and more.
  * */
-const Alexa = require('ask-sdk-core');
+import Alexa from 'ask-sdk-core';
+import http from 'http'
+
+//////////////////////////////////////////////////////////////////////
+
+function do_http_get(url) {
+
+    return new Promise((resolve, reject) => {
+
+        http.get(url, (response) => {
+
+            let body = [];
+
+            response.on('data', (data) => {
+                body.push(data);
+            });
+
+            response.on('end', () => {
+                resolve(body.toString());
+            });
+
+            response.on('error', (error) => {
+                console.log(`HTTP ERROR: ${error}`);
+                reject(error);
+            });
+        });
+    });
+}
+
+//////////////////////////////////////////////////////////////////////
+
+async function getReading(url) {
+
+    try {
+
+        const result = await do_http_get(url);
+
+        const data = JSON.parse(result);
+
+        return {
+            distance: data['distance'][0],
+            time: data['time'][0],
+            vbat: data['vbat'][0],
+            rssi: data['rssi'][0]
+        };
+
+    } catch (err) {
+        console.log(`getReading error: ${err}`);
+    }
+
+    return null;
+}
+
+//////////////////////////////////////////////////////////////////////
 
 const LaunchRequestHandler = {
+
     canHandle(handlerInput) {
+
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest';
     },
-    handle(handlerInput) {
-        const speakOutput = 'Welcome, you can say Hello or Help. Which would you like to try?';
+
+    async handle(handlerInput) {
+
+        var speakOutput = "ABC";
+
+        let reading = await getReading('http://vibue.com:5002/readings?device=84f3eb536123&count=1');
+
+        if (reading) {
+
+            let distance = reading.distance;
+            const min_dist = 120;
+            const max_dist = 235;
+            const range = max_dist - min_dist;
+            if (distance < min_dist) {
+                distance = min_dist
+            }
+            if (distance > max_dist) {
+                distance = max_dist
+            }
+            let percent = (((max_dist - distance) * 10 / range) | 0) * 10;
+            speakOutput = `The salt level is ${percent} percent`;
+
+        } else {
+            speakOutput = `I'm sorry, I can't get the salt level at the moment, please try later`;
+        }
 
         return handlerInput.responseBuilder
             .speak(speakOutput)
@@ -25,16 +103,19 @@ const LevelHandler = {
     canHandle(handlerInput) {
         const request = handlerInput.requestEnvelope.request;
         return request.type === 'IntentRequest' &&
-            request.intent.name === 'level_intent';
+            request.intent.name === 'salty_intent';
     },
     async handle(handlerInput) {
-        const filledSlots = handlerInput.requestEnvelope.request.intent.slots;
-        const slotValues = getSlotValues(filledSlots);
+
+        // get latest salt level reading and say it
+
         let text = "The salt level is all sort of crazy"
         return handlerInput.responseBuilder.speak(text).getResponse();
     }
 };
 
+
+//////////////////////////////////////////////////////////////////////
 
 const HelloWorldIntentHandler = {
     canHandle(handlerInput) {
@@ -51,6 +132,8 @@ const HelloWorldIntentHandler = {
     }
 };
 
+//////////////////////////////////////////////////////////////////////
+
 const HelpIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
@@ -66,6 +149,8 @@ const HelpIntentHandler = {
     }
 };
 
+//////////////////////////////////////////////////////////////////////
+
 const CancelAndStopIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
@@ -80,6 +165,9 @@ const CancelAndStopIntentHandler = {
             .getResponse();
     }
 };
+
+//////////////////////////////////////////////////////////////////////
+
 /* *
  * FallbackIntent triggers when a customer says something that doesn’t map to any intents in your skill
  * It must also be defined in the language model (if the locale supports it)
@@ -99,6 +187,9 @@ const FallbackIntentHandler = {
             .getResponse();
     }
 };
+
+//////////////////////////////////////////////////////////////////////
+
 /* *
  * SessionEndedRequest notifies that a session was ended. This handler will be triggered when a currently open 
  * session is closed for one of the following reasons: 1) The user says "exit" or "quit". 2) The user does not 
@@ -114,11 +205,15 @@ const SessionEndedRequestHandler = {
         return handlerInput.responseBuilder.getResponse(); // notice we send an empty response
     }
 };
+
+//////////////////////////////////////////////////////////////////////
+
 /* *
  * The intent reflector is used for interaction model testing and debugging.
  * It will simply repeat the intent the user said. You can create custom handlers for your intents 
  * by defining them above, then also adding them to the request handler chain below 
  * */
+
 const IntentReflectorHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest';
@@ -133,6 +228,9 @@ const IntentReflectorHandler = {
             .getResponse();
     }
 };
+
+//////////////////////////////////////////////////////////////////////
+
 /**
  * Generic error handling to capture any syntax or routing errors. If you receive an error
  * stating the request handler chain is not found, you have not implemented a handler for
@@ -153,12 +251,7 @@ const ErrorHandler = {
     }
 };
 
-/**
- * This handler acts as the entry point for your skill, routing all request and response
- * payloads to the handlers above. Make sure any new handlers or interceptors you've
- * defined are included below. The order matters - they're processed top to bottom 
- * */
-exports.handler = Alexa.SkillBuilders.custom()
+export const handler = Alexa.SkillBuilders.custom()
     .addRequestHandlers(
         LaunchRequestHandler,
         LevelHandler,
