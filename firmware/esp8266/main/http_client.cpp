@@ -16,8 +16,6 @@ namespace
 
     char const *HTTP_METHOD_MAPPING[] = { "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "NOTIFY", "SUBSCRIBE", "UNSUBSCRIBE", "OPTIONS" };
 
-    size_t constexpr MAX_HTTP_OUTPUT_BUFFER = 1024;
-
     //////////////////////////////////////////////////////////////////////
 
     esp_err_t http_event_handler(esp_http_client_event_t *evt)

@@ -74,7 +74,7 @@ namespace
     int constexpr SLEEP_DELAY_MS = 1;                       // pause before going to sleep
     int constexpr VBAT_READ_DELAY_MS = 2;                   // pause before reading vbat
     int constexpr ESP_BOOT_TIMEOUT_MS = 5000;               // wait this long for ESP to boot after power up
-    int constexpr SENSOR_BOOT_DELAY = 100;                  // wait this long for ESP to boot after power up
+    int constexpr SENSOR_BOOT_DELAY_MS = 100;               // give distance sensor this long to boot
 
     int constexpr DISTANCE_COUNTER_HZ = 8000000;            // distance counter Hz
 
@@ -82,7 +82,7 @@ namespace
 
     uint16 constexpr DISTANCE_TIMER_SCALE = (static_cast<uint16_t>(SYS_CLOCK / DISTANCE_COUNTER_HZ));
 
-    static_assert((SYS_CLOCK % DISTANCE_COUNTER_HZ) == 0, "DISTANCE_RESOLUTION must divide exactly into SYS_CLOCK");
+    static_assert((SYS_CLOCK % DISTANCE_COUNTER_HZ) == 0, "DISTANCE_COUNTER_HZ must divide exactly into SYS_CLOCK");
 
     enum state_t
     {
@@ -99,13 +99,13 @@ namespace
 #if defined(DEBUG_PRINTF)
     char const *state_name[state_num] =
     {
-                    "factory_reset",
-                    "read_vbat",
-                    "read_distance",
-                    "wait_for_esp",
-                    "esp",
-                    "reboot_esp",
-                    "done"
+        "factory_reset",
+        "read_vbat",
+        "read_distance",
+        "wait_for_esp",
+        "esp",
+        "reboot_esp",
+        "done"
     };
 #endif
 
@@ -169,7 +169,7 @@ namespace
     // main system state
 
     state_t state;
-    uint32 state_start_ticks;
+    stopwatch_t state_stopwatch;
 
     // status of some peripheral handlers
 
@@ -177,7 +177,7 @@ namespace
     volatile status_t spi_status = status_idle;
     volatile status_t distance_status = status_idle;
 
-    // systicks
+    // systicks, 1KHz
 
     volatile uint32 ticks;
 
@@ -204,32 +204,44 @@ namespace
     stopwatch_t distance_timer;
     int distance_delay;
 
+    // vbat admin
+
     volatile uint16 vbat_reading;
     stopwatch_t vbat_timer;
 
-    button_t button;
+    // button admin
 
+    button_t button;
     stopwatch_t button_held_timer;
 
     // how many boots from standby mode since power on
 
     int standby_boot = 0;
 
+    // default sleep count (@ of ~30s slots) - overriden from the server
+
     uint16 sleep_count = 304;
 
     //////////////////////////////////////////////////////////////////////
 
-    uint32 state_elapsed_ticks()
+    uint32 stopwatch_t::elapsed() const
     {
-        return static_cast<uint32>(static_cast<int32>(ticks) - state_start_ticks);
+        return static_cast<uint32>(static_cast<int32>(ticks) - now);
+    }
+
+    //////////////////////////////////////////////////////////////////////
+
+    void stopwatch_t::reset()
+    {
+        now = ticks;
     }
 
     //////////////////////////////////////////////////////////////////////
 
     void set_state(state_t new_state)
     {
-        debug("set_state [%s] (%d) after %d ticks\n", state_name[new_state], new_state, state_elapsed_ticks());
-        state_start_ticks = ticks;
+        debug("set_state [%s] (%d) after %d ticks\n", state_name[new_state], new_state, state_stopwatch.elapsed());
+        state_stopwatch.reset();
         state = new_state;
     }
 
@@ -427,20 +439,6 @@ namespace
         uint32 constexpr flags = (USART_STATR_TC | USART_STATR_TXE);
         while((USART1->STATR & flags) != flags) {
         }
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
-    uint32 stopwatch_t::elapsed() const
-    {
-        return static_cast<uint32>(static_cast<int32>(ticks) - now);
-    }
-
-    //////////////////////////////////////////////////////////////////////
-
-    void stopwatch_t::reset()
-    {
-        now = ticks;
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -809,7 +807,6 @@ namespace
 
         button_held_timer.reset();
 
-        state_start_ticks = 0;
         ticks = 0;
 
         payload.distance = 0;
@@ -854,7 +851,7 @@ extern "C" int main()
             button_held_timer.reset();
         }
 
-        uint32 elapsed = state_elapsed_ticks();
+        uint32 elapsed = state_stopwatch.elapsed();
 
         switch(state)
         {
@@ -909,7 +906,7 @@ extern "C" int main()
                     num_distance_readings = 0;
                     distance_timer.reset();
                     distance_status = status_idle;
-                    distance_delay = SENSOR_BOOT_DELAY;
+                    distance_delay = SENSOR_BOOT_DELAY_MS;
                     led_on();
                     set_state(state_read_distance);
                 }

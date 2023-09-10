@@ -44,9 +44,13 @@ namespace
 
     EventGroupHandle_t wifi_event_bits;
 
-    constexpr uint32 main_wifi_connected = BIT0;
-    constexpr uint32 main_wifi_disconnected = BIT1;
-    constexpr uint32 main_wifi_bit_mask = BIT0 | BIT1;
+    uint32 constexpr main_wifi_connected = BIT0;
+    uint32 constexpr main_wifi_disconnected = BIT1;
+    uint32 constexpr main_wifi_bit_mask = BIT0 | BIT1;
+
+    // longest valid sleep_count (20000 = ~10000 minutes = ~7 days (very roughly))
+
+    int constexpr max_sleep_count = 20000;
 
     int8 wifi_rssi;
 
@@ -90,35 +94,38 @@ namespace
 
         if(json == nullptr) {
             ESP_LOGE(TAG, "Failed to parse response");
-
-        } else {
-
-            cJSON *settings = cJSON_GetObjectItem(json, "settings");
-
-            if(settings == nullptr) {
-                ESP_LOGE(TAG, "Can't find settings object");
-            } else {
-
-                cJSON *sleep_count = cJSON_GetObjectItem(settings, "sleep_count");
-
-                if(sleep_count == nullptr) {
-                    ESP_LOGE(TAG, "Can't find sleep_count object");
-
-                } else {
-
-                    if(sleep_count->type != cJSON_Number) {
-                        ESP_LOGE(TAG, "sleep_count is not a number");
-
-                    } else {
-
-                        ESP_LOGI(TAG, "sleep_count: %d", sleep_count->valueint);
-                        status.sleep_count = static_cast<uint16>(sleep_count->valueint);
-                    }
-                }
-            }
-
-            cJSON_Delete(json);
+            return;
         }
+        DEFER(cJSON_Delete(json));
+
+        cJSON *settings = cJSON_GetObjectItem(json, "settings");
+
+        if(settings == nullptr) {
+            ESP_LOGE(TAG, "Can't find settings object");
+            return;
+        }
+
+        cJSON *sleep_count = cJSON_GetObjectItem(settings, "sleep_count");
+
+        if(sleep_count == nullptr) {
+            ESP_LOGE(TAG, "Can't find sleep_count object");
+            return;
+        }
+
+        if(sleep_count->type != cJSON_Number) {
+            ESP_LOGE(TAG, "sleep_count is not a number");
+            return;
+        }
+
+        int sleep_count_value = sleep_count->valueint;
+
+        if(sleep_count_value > max_sleep_count || sleep_count_value < 1) {
+            ESP_LOGE(TAG, "sleep_count %d out of range (1..%d)", sleep_count_value, max_sleep_count);
+            return;
+        }
+
+        ESP_LOGI(TAG, "sleep_count: %d", sleep_count_value);
+        status.sleep_count = static_cast<uint16>(sleep_count_value);
     }
 
 }    // namespace
