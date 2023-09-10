@@ -1,48 +1,67 @@
-<!doctype html>
-<html  data-bs-theme="dark">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-4bw+/aepP/YC94hEpVNVgiZdgIC5+VKNBQNGCHeKRQN+PtmoHDEXuppvnDJzQIu9" crossorigin="anonymous">
-  <link href="style.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js" integrity="sha384-HwwvtgBNo3bZJJLYd8oVXjrBZt8cqVSpeBNS5n7C8IVInixGAoxmnlMuBnhbgrkm" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="graph.js" defer></script>
-  <head>
-    <title>Salt Sensor Graphs</title>
-  </head>
-  <body>
-    <div class="header mx-auto p-2">
-      <div class="container text-center">
-        <h4>Salt Sensor Graphs</h4>
-      </div>
+<!DOCTYPE html>
+
+<html data-bs-theme="dark">
+
+<!-- CSS -->
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet" />
+<link href="style.css" rel="stylesheet" />
+
+<!-- JS libs -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- My JS stuff -->
+
+<script src="graph.js" defer></script>
+
+<!-- Page -->
+
+<head>
+  <title>Salt Sensor Graphs</title>
+</head>
+
+<body>
+  <div class="header mx-auto p-3">
+    <div class="container text-center">
+      <h5>Salt Sensor Graphs</h5>
     </div>
-    <div class="container">
-      <div class="row">
-        <div class="col mb-4">
-          <div class="d-flex justify-content-center">
-            <div class="btn-toolbar pagination-centered">
-              <div class="input-group input-group-sm w-auto">
-                <span class="input-group-text dropdown dropdown-toggle btn btn-sm btn-info" id="dropdownMenuButton" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                    Device
-                </span>
-                <div id="dropdown_device_items" class="dropdown-menu" aria-labelledby="dropdownMenuButton">
-                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
-                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
-                  <a class="dropdown-item" href="#"><span>Action</span><span>Stations</span></a>
-                </div>
-                <input id="device_address" type="text" class="form-control text-info" placeholder="84f3eb536123" aria-label="Device" aria-describedby="basic-addon1" disabled>
+  </div>
+  <div class="container">
+    <div class="row">
+      <div class="col mb-4">
+        <div class="d-flex justify-content-center">
+          <div class="btn-toolbar pagination-centered">
+            <div class="w-auto">
+              <button id="refresh" class="btn btn-sm btn-dark mx-2" onclick="show_graph()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-clockwise" viewBox="0 0 16 16">
+                  <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z" />
+                  <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z" />
+                </svg>
+              </button>
+            </div>
+            <div class="input-group input-group-sm w-auto">
+              <span class="input-group-text dropdown dropdown-toggle btn btn-sm btn-info" id="dropdownMenuButton" data-bs-toggle="dropdown">Device</span>
+              <div id="dropdown_device_items" class="dropdown-menu">
+                <a class="dropdown-item" href="#"><span>Action</span></a>
               </div>
-              <div class="w-auto mx-3">
-                <button id="button0" class="btn btn-sm btn-distance mx-1" onclick="show_graph('0')">distance</button>
-                <button id="button1" class="btn btn-sm btn-vbat mx-1" onclick="show_graph('1')">battery</button>
-                <button id="button2" class="btn btn-sm btn-wifi mx-1" onclick="show_graph('2')">wifi</button>
-              </div>
+              <input id="device_address" type="text" class="form-control text-info" placeholder="84f3eb536123" disabled />
+            </div>
+            <div class="w-auto mx-3">
+              <button id="button0" class="btn btn-sm btn-distance" onclick="show_graph('0')">distance</button>
+              <button id="button1" class="btn btn-sm btn-vbat" onclick="show_graph('1')">battery</button>
+              <button id="button2" class="btn btn-sm btn-wifi" onclick="show_graph('2')">wifi</button>
             </div>
           </div>
         </div>
       </div>
     </div>
-    <div style="width: 80%;margin: auto">
-      <canvas id="graph"></canvas>
-    </div>
-  </body>
+  </div>
+  <div style="width: 80%; margin: auto">
+    <canvas id="graph"></canvas>
+  </div>
+</body>
+
 </html>

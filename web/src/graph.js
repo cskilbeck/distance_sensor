@@ -19,30 +19,25 @@ function date_format(x) {
 
 //////////////////////////////////////////////////////////////////////
 
-function setCookie(name, value, days) {
+function set_cookie(name, value, days) {
 
+    days = days || 400;
     var expires = "";
-    if (days) {
-        var date = new Date();
-        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-        expires = "; expires=" + date.toUTCString();
-    }
+    var date = new Date();
+    date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+    expires = "; expires=" + date.toUTCString();
     document.cookie = name + "=" + (value || "") + expires + "; path=/";
 }
 
 //////////////////////////////////////////////////////////////////////
 
-function getCookie(name) {
+function get_cookie(name) {
 
-    var nameEQ = name + "=";
-    var ca = document.cookie.split(';');
-    for (var i = 0; i < ca.length; i++) {
-        var c = ca[i];
-        while (c.charAt(0) == ' ') {
-            c = c.substring(1, c.length);
-        }
-        if (c.indexOf(nameEQ) == 0) {
-            return c.substring(nameEQ.length, c.length);
+    var f = name + "=";
+    for (var c of document.cookie.split(';')) {
+        var t = c.trimStart();
+        if (t.indexOf(f) == 0) {
+            return t.substring(f.length);
         }
     }
     return null;
@@ -50,16 +45,17 @@ function getCookie(name) {
 
 //////////////////////////////////////////////////////////////////////
 
-function eraseCookie(name) {
+function erase_cookie(name) {
 
     document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
 }
 
 //////////////////////////////////////////////////////////////////////
 
-function set_device(name, address) {
-    setCookie("device_name", name, 9999);
-    setCookie("device_address", address, 9999);
+function set_device(ev, name, address) {
+    ev.preventDefault()
+    set_cookie("device_name", name);
+    set_cookie("device_address", address);
     show_graph();
 }
 
@@ -90,7 +86,7 @@ function refresh_devices() {
                 var device = devices[i];
                 var name = device['name']
                 var addr = device['address']
-                items += `<a onClick='set_device("${name}", "${addr}")' class="dropdown-item" href="#"><span class='text-info'>${device['address']}</span><span>&nbsp;${device['name']}</span></a>`
+                items += `<a onClick='set_device(event, "${name}", "${addr}")' class="dropdown-item" href="${name}"><span class='text-info'>${device['address']}</span><span>&nbsp;${device['name']}</span></a>`
             }
             var dropdown = document.getElementById('dropdown_device_items');
             dropdown.innerHTML = items;
@@ -106,13 +102,13 @@ function show_graph(idx) {
     var now = new Date(new Date().setDate(new Date().getDate() + 1));
     var then = new Date(new Date().setDate(now.getDate() - 121));
 
-    var graph_num_str = idx || getCookie("graph_num") || "0";
-    var device_name = getCookie("device_name") || "?";
-    var device_address = getCookie("device_address") || "84f3eb536123";
+    var graph_num_str = idx || get_cookie("graph_num") || "0";
+    var device_name = get_cookie("device_name") || "?";
+    var device_address = get_cookie("device_address") || "84f3eb536123";
 
-    setCookie("graph_num", graph_num_str, 9999);
-    setCookie("device_name", device_name, 9999);
-    setCookie("device_address", device_address, 9999);
+    set_cookie("graph_num", graph_num_str);
+    set_cookie("device_name", device_name);
+    set_cookie("device_address", device_address);
 
     var graph_num = parseInt(graph_num_str);
 
@@ -120,8 +116,10 @@ function show_graph(idx) {
         var btn = document.getElementById(`button${i}`);
         if (i == graph_num) {
             btn.classList.add('highlighted');
+            btn.classList.remove('inactive');
         } else {
             btn.classList.remove('highlighted');
+            btn.classList.add('inactive');
         }
     }
 
@@ -191,6 +189,7 @@ function show_graph(idx) {
             }
             datasets.push({
                 label: config.field,
+                labelPosition: "none",
                 data: data,
                 showLine: true,
                 borderColor: config.lineColor,
@@ -226,11 +225,7 @@ function show_graph(idx) {
                             }
                         },
                         legend: {
-                            display: true,
-                            position: 'bottom',
-                            labels: {
-                                color: config.color
-                            }
+                            display: false,
                         },
                     },
                     responsive: true,
