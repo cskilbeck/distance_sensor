@@ -67,7 +67,7 @@ function refresh_devices() {
     xhr.responseType = 'json';
 
     var url = new URL(`https://${host}/devices`);
-    url.searchParams.set('nonce', new Date().getMilliseconds());
+    url.searchParams.set('nonce', Math.random());
 
     xhr.open('GET', url);
 
@@ -90,6 +90,7 @@ function refresh_devices() {
             }
             var dropdown = document.getElementById('dropdown_device_items');
             dropdown.innerHTML = items;
+            show_graph();
         }
     }
     xhr.send();
@@ -130,7 +131,7 @@ function show_graph(idx) {
     url.searchParams.set('from', then.toISOString());
     url.searchParams.set('to', now.toISOString());
     url.searchParams.set('device', device_address);
-    url.searchParams.set('nonce', new Date().getMilliseconds());
+    url.searchParams.set('nonce', Math.random());
 
     var xhr = new XMLHttpRequest();
     xhr.responseType = 'json';
@@ -267,5 +268,4 @@ function show_graph(idx) {
 
 (function () {
     refresh_devices();
-    show_graph();
 })();

@@ -2,67 +2,73 @@
 
 .btn-distance,
 .btn-distance.inactive {
-  background-color: #207820;
-  opacity: 20%;
+  color: #000;
+  border-color: #000;
+  background-color: #32A032;
+  opacity: 30%;
 }
 
-.btn-distance:hover {
+.btn-distance:hover,
+.btn-distance.highlighted {
+  color: #fff;
+  border-color: #fff;
   background-color: #32A032;
   opacity: 100%;
 }
 
 .btn-distance:active:focus {
-  border-color: #999;
-  background-color: #207820;
-  opacity: 50%;
-}
-
-.btn-distance.highlighted {
-  opacity: 100%;
+  color: #fff;
+  border-color: #fff;
+  background-color: #32A032;
+  opacity: 70%;
 }
 
 /********** VBAT **********/
 
 .btn-vbat,
 .btn-vbat.inactive {
-  background-color: #804010;
-  opacity: 20%;
+  color: #000;
+  border-color: #000;
+  background-color: #D07020;
+  opacity: 30%;
 }
 
-.btn-vbat:hover {
+.btn-vbat:hover,
+.btn-vbat.highlighted {
+  color: #fff;
+  border-color: #fff;
   background-color: #D07020;
   opacity: 100%;
 }
 
 .btn-vbat:active:focus {
-  border-color: #999;
-  background-color: #804010;
-  opacity: 50%;
-}
-
-.btn-vbat.highlighted {
-  opacity: 100%;
+  color: #fff;
+  border-color: #fff;
+  background-color: #D07020;
+  opacity: 70%;
 }
 
 /********** WIFI **********/
 
 .btn-wifi,
 .btn-wifi.inactive {
-  background-color: #3050d0;
-  opacity: 20%;
+  color: #000;
+  border-color: #000;
+  background-color: #50a0ff;
+  opacity: 30%;
 }
 
-.btn-wifi:hover {
+.btn-wifi:hover,
+.btn-wifi.highlighted {
+  color: #fff;
+  border-color: #fff;
   background-color: #50a0ff;
   opacity: 100%;
 }
 
 .btn-wifi:active:focus {
-  border-color: #999;
-  background-color: #3050d0;
-  opacity: 50%;
-}
-
-.btn-wifi.highlighted {
-  opacity: 100%;
+  color: #fff;
+  border-color: #fff;
+  background-color: #50a0ff;
+  opacity: 70%;
 }

@@ -34,6 +34,22 @@ function do_http_get(url) {
 
 //////////////////////////////////////////////////////////////////////
 
+function distanceToPercent(d) {
+
+    const min_dist = 120;
+    const max_dist = 235;
+    const range = max_dist - min_dist;
+    if (d < min_dist) {
+        d = min_dist
+    }
+    if (d > max_dist) {
+        d = max_dist
+    }
+    let percent = (((max_dist - d) * 10 / range) | 0) * 10;
+}
+
+//////////////////////////////////////////////////////////////////////
+
 async function getReading(url) {
 
     try {
@@ -73,17 +89,7 @@ const LaunchRequestHandler = {
 
         if (reading) {
 
-            let distance = reading.distance;
-            const min_dist = 120;
-            const max_dist = 235;
-            const range = max_dist - min_dist;
-            if (distance < min_dist) {
-                distance = min_dist
-            }
-            if (distance > max_dist) {
-                distance = max_dist
-            }
-            let percent = (((max_dist - distance) * 10 / range) | 0) * 10;
+            let percent = distanceToPercent(reading.distance);
             speakOutput = `The salt level is ${percent} percent`;
 
         } else {
