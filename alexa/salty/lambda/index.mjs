@@ -89,8 +89,7 @@ const LaunchRequestHandler = {
 
         if (reading) {
 
-            let percent = distanceToPercent(reading.distance);
-            speakOutput = `The salt level is ${percent} percent`;
+            speakOutput = `The salt level is ${distanceToPercent(reading.distance)}%`;
 
         } else {
             speakOutput = `I'm sorry, I can't get the salt level at the moment, please try later`;
@@ -98,7 +97,6 @@ const LaunchRequestHandler = {
 
         return handlerInput.responseBuilder
             .speak(speakOutput)
-            .reprompt(speakOutput)
             .getResponse();
     }
 };
