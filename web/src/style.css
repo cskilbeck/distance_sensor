@@ -1,74 +1,71 @@
 /********** DISTANCE **********/
 
-.btn-distance,
+.btn-distance {
+  background-color: #32A032 !important;
+  width: 5.75em;
+  border-color: #000;
+}
+
 .btn-distance.inactive {
   color: #000;
-  border-color: #000;
-  background-color: #32A032;
-  opacity: 30%;
+  opacity: 25%;
 }
 
 .btn-distance:hover,
 .btn-distance.highlighted {
   color: #fff;
-  border-color: #fff;
-  background-color: #32A032;
   opacity: 100%;
 }
 
 .btn-distance:active:focus {
   color: #fff;
-  border-color: #fff;
-  background-color: #32A032;
   opacity: 70%;
 }
 
 /********** VBAT **********/
 
-.btn-vbat,
+.btn-vbat {
+  background-color: #D07020 !important;
+  width: 5.75em;
+  border-color: #000;
+}
+
 .btn-vbat.inactive {
   color: #000;
-  border-color: #000;
-  background-color: #D07020;
-  opacity: 30%;
+  opacity: 25%;
 }
 
 .btn-vbat:hover,
 .btn-vbat.highlighted {
   color: #fff;
-  border-color: #fff;
-  background-color: #D07020;
   opacity: 100%;
 }
 
 .btn-vbat:active:focus {
   color: #fff;
-  border-color: #fff;
-  background-color: #D07020;
   opacity: 70%;
 }
 
 /********** WIFI **********/
 
-.btn-wifi,
+.btn-wifi {
+  background-color: #4382cf !important;
+  width: 5.75em;
+  border-color: #000;
+}
+
 .btn-wifi.inactive {
   color: #000;
-  border-color: #000;
-  background-color: #50a0ff;
-  opacity: 30%;
+  opacity: 25%;
 }
 
 .btn-wifi:hover,
 .btn-wifi.highlighted {
   color: #fff;
-  border-color: #fff;
-  background-color: #50a0ff;
   opacity: 100%;
 }
 
 .btn-wifi:active:focus {
   color: #fff;
-  border-color: #fff;
-  background-color: #50a0ff;
   opacity: 70%;
 }
