@@ -1,19 +1,38 @@
-DROP DATABASE salt_sensor;
+DROP DATABASE salt_sensor_test;
 
-CREATE DATABASE salt_sensor;
+CREATE DATABASE salt_sensor_test;
 
-USE salt_sensor;
+USE salt_sensor_test;
+
+-- user account
+
+CREATE TABLE accounts (
+        account_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        account_email VARCHAR(250),
+        PRIMARY KEY(account_id));
+
+-- for warning users about low levels etc
+
+CREATE TABLE notifications (
+        notification_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        device_id INT NOT NULL,
+        account_id INT NOT NULL,
+        PRIMARY KEY(notification_id));
+
+-- devices
 
 CREATE TABLE devices (
         device_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         device_address VARCHAR(12) UNIQUE NOT NULL,
         device_name VARCHAR(64) UNIQUE,
-        device_email VARCHAR(250),
+        device_account_owner INT,
         device_warning_threshold SMALLINT UNSIGNED DEFAULT 10,
         vbat_warning_threshold SMALLINT UNSIGNED DEFAULT 750,
         time_warning_threshold SMALLINT UNSIGNED DEFAULT 24,
         sleep_count SMALLINT DEFAULT 304,
         PRIMARY KEY(device_id));
+
+-- readings
 
 CREATE TABLE readings (
         reading_id INT UNSIGNED NOT NULL AUTO_INCREMENT,

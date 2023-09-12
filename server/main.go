@@ -38,9 +38,9 @@ type sensorSettings struct {
 // Device identifier
 
 type device struct {
+	Id                   int    `json:"id"`                      // device Id
 	Address              string `json:"address"`                 // mac address
 	Name                 string `json:"name"`                    // user defined name
-	Email                string `json:"email"`                   // user defined email for low salt notification
 	WarningThreshold     uint16 `json:"warning_threshold"`       // percent level below which a warning email is sent
 	VbatWarningThreshold uint16 `json:"vbat_warning_threshold"`  // vbat warning level in centivolts (10mA units)
 	TimeWarningThreshold uint16 `json:"time_warning_threashold"` // hours since a reading warning threshold
@@ -247,7 +247,7 @@ func sendWarningEmail(data emailWarnings, recipients ...string) error {
 	if err = SendEmail(credentials.SMTPServer, credentials.SMTPAccount, credentials.SMTPPassword, "Water Softener", data.Subject, out.String(), "text/html", recipients...); err != nil {
 		logger.Error.Printf("Error sending email: %s", err.Error())
 	}
-	logger.Info.Printf("Sent warning email")
+	logger.Info.Printf("Sent warning email to %d recipient(s)", len(recipients))
 	return nil
 }
 
@@ -514,18 +514,18 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 
 	deviceAddress := fmt.Sprintf("%012x", device)
 
-	var deviceId uint64
+	var deviceAddress48 uint64
 
 	if err = db.QueryRow(`SELECT device_id
 							FROM devices
-							WHERE device_address = ?;`, deviceAddress).Scan(&deviceId); err != nil {
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceAddress48); err != nil {
 
 		if err == sql.ErrNoRows {
 			return getReadingsResponse{}, http.StatusBadRequest, fmt.Errorf("device %s not found", deviceAddress)
 		}
 	}
 
-	logger.Debug.Printf("Device ID %d", deviceId)
+	logger.Debug.Printf("Device ID %d", deviceAddress48)
 
 	// get the readings
 
@@ -549,7 +549,7 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 
 	var query *sql.Rows
 
-	if query, err = sqlStatement.Query(deviceId, from.Format(time.RFC3339), to.Format(time.RFC3339), count); err != nil {
+	if query, err = sqlStatement.Query(deviceAddress48, from.Format(time.RFC3339), to.Format(time.RFC3339), count); err != nil {
 		return getReadingsResponse{}, http.StatusInternalServerError, err
 	}
 
@@ -597,7 +597,7 @@ func queryDevices() (response getDevicesResponse, status int, err error) {
 
 	var query *sql.Rows
 
-	if query, err = db.Query(`SELECT device_address, IFNULL(device_name, '-'), device_email, device_warning_threshold, vbat_warning_threshold FROM devices`); err != nil {
+	if query, err = db.Query(`SELECT device_id, device_address, IFNULL(device_name, '-'), device_warning_threshold, vbat_warning_threshold FROM devices`); err != nil {
 		return getDevicesResponse{}, http.StatusInternalServerError, err
 	}
 
@@ -608,16 +608,16 @@ func queryDevices() (response getDevicesResponse, status int, err error) {
 	rows := 0
 
 	for query.Next() {
+		var id int
 		var addr string
 		var name string
-		var email string
 		var warningThreshold uint16
 		var vbatWarningThreshold uint16
-		if err = query.Scan(&addr, &name, &email, &warningThreshold, &vbatWarningThreshold); err != nil {
+		if err = query.Scan(&id, &addr, &name, &warningThreshold, &vbatWarningThreshold); err != nil {
 			return getDevicesResponse{}, http.StatusInternalServerError, err
 		}
 		rows += 1
-		response.Device = append(response.Device, device{Address: addr, Name: name, Email: email, WarningThreshold: warningThreshold, VbatWarningThreshold: vbatWarningThreshold})
+		response.Device = append(response.Device, device{Id: id, Address: addr, Name: name, WarningThreshold: warningThreshold, VbatWarningThreshold: vbatWarningThreshold})
 	}
 	logger.Debug.Printf("Fetched %d rows", rows)
 	response.Rows = rows
@@ -645,7 +645,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	// device is required
 
-	var device uint64
+	var deviceAddress48 uint64
 
 	// these are optional with defaults
 
@@ -655,7 +655,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	// scan the parameters
 
-	if device, err = parseQueryParamUnsigned("device", 16, 48, queryParams); err != nil {
+	if deviceAddress48, err = parseQueryParamUnsigned("device", 16, 48, queryParams); err != nil {
 		errors = append(errors, err.Error())
 	}
 
@@ -688,7 +688,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	var response getReadingsResponse
 	var httpStatus int
-	response, httpStatus, err = queryReadings(from, to, count, device)
+	response, httpStatus, err = queryReadings(from, to, count, deviceAddress48)
 
 	if err != nil {
 		respondError(w, httpStatus, err.Error())
@@ -805,14 +805,14 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	logger.Debug.Printf("Get device id for %s", deviceAddress)
 
-	var deviceId int64
+	var deviceAddress48 int64
 	var sleepCount int
 	var insert sql.Result
 
 	if err = db.QueryRow(`SELECT
 							device_id, sleep_count
 							FROM devices
-							WHERE device_address = ?;`, deviceAddress).Scan(&deviceId, &sleepCount); err != nil {
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceAddress48, &sleepCount); err != nil {
 
 		if err == sql.ErrNoRows {
 
@@ -821,7 +821,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 			if insert, err = db.Exec(`INSERT INTO devices
 										(device_address) VALUES (?)`, deviceAddress); err == nil {
 
-				deviceId, err = insert.LastInsertId()
+				deviceAddress48, err = insert.LastInsertId()
 			}
 		}
 	}
@@ -831,7 +831,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 		return
 	}
 
-	logger.Debug.Printf("Device ID %d", deviceId)
+	logger.Debug.Printf("Device ID %d", deviceAddress48)
 
 	// add the reading
 
@@ -839,7 +839,7 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 	if insert, err = db.Exec(`INSERT INTO readings
 								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
-                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, deviceId, vbat, distance_mm, flags, rssi); err == nil {
+                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, deviceAddress48, vbat, distance_mm, flags, rssi); err == nil {
 
 		readingId, err = insert.LastInsertId()
 	}
@@ -868,23 +868,31 @@ func checkSaltLevels() {
 		return
 	}
 
+	var db *sql.DB
+
+	if db, err = openDatabase(); err != nil {
+		logger.Error.Printf("Error opening database: %s", err.Error())
+		return
+	}
+	defer db.Close()
+
 	for _, device := range devices.Device {
 
 		logger.Verbose.Printf("Checking Salt Level for device %s (%s)", device.Address, device.Name)
 
-		if len(device.Email) == 0 {
-
-			logger.Info.Printf("Device %s has no email, not checking...", device.Address)
-
-		} else if deviceId, err := strconv.ParseUint(device.Address, 16, 48); err != nil {
+		if deviceAddress48, err := strconv.ParseUint(device.Address, 16, 48); err != nil {
 
 			logger.Error.Printf("Device %s has bad address: %s", device.Address, err.Error())
 
-		} else if reading, _, err := queryReadings(time.Time{}, time.Now().Add(time.Hour*24), 1, deviceId); err != nil {
+		} else if reading, _, err := queryReadings(time.Time{}, time.Now().Add(time.Hour*24), 1, deviceAddress48); err != nil {
 
 			logger.Error.Printf("Error querying readings for device %s : %s", device.Address, err.Error())
 
-		} else if reading.Rows != 0 {
+		} else if reading.Rows == 0 {
+
+			logger.Info.Printf("No readings for device %s (%s)", device.Address, device.Name)
+
+		} else {
 
 			warnings := []string{}
 
@@ -908,23 +916,64 @@ func checkSaltLevels() {
 
 			hours_since := time.Now().UTC().Sub(time.Unix(int64(reading.Time[0]), 0)).Hours()
 
-			if hours_since > float64(device.TimeWarningThreshold) {
+			if len(warnings) != 0 || hours_since > float64(device.TimeWarningThreshold) {
 				warnings = append(warnings, fmt.Sprintf("Last reading was %.0f hours ago", hours_since))
 			}
 
-			if len(warnings) != 0 {
+			if len(warnings) == 0 {
 
-				logger.Verbose.Printf("Sending alert email for device %s (%s)", device.Address, device.Name)
+				logger.Info.Printf("No warning for %s (%s)", device.Address, device.Name)
+				continue
+			}
 
-				emailData := emailWarnings{
-					Subject:  "Alert from the Water Softener",
-					Header:   "Warning! The Salt Sensor says...",
-					Warnings: warnings,
-					Footer:   "This email is from the Salt Sensor Server",
+			logger.Verbose.Printf("Sending alert email for device %s (%s)", device.Address, device.Name)
+
+			var query *sql.Rows
+
+			if query, err = db.Query(`SELECT account_email FROM notifications
+										LEFT JOIN accounts
+											ON notifications.account_id = accounts.account_id
+										WHERE device_id = ?;`, device.Id); err != nil {
+
+				if err == sql.ErrNoRows {
+
+					logger.Info.Printf("No notifications for device %s", device.Address)
+					continue
+				}
+				logger.Error.Printf("Error getting notifications for %s: %s", device.Address, err.Error())
+				continue
+			}
+
+			emails := []string{}
+
+			for query.Next() {
+
+				var email string
+
+				if err = query.Scan(&email); err != nil {
+
+					logger.Error.Printf("Error reading notification email address for device %s", device.Address)
+					continue
 				}
 
-				sendWarningEmail(emailData, device.Email)
+				logger.Info.Printf("Sending email to %s", email)
+
+				emails = append(emails, email)
 			}
+
+			if len(emails) == 0 {
+
+				logger.Info.Printf("No emails for device %s", device.Address)
+				continue
+			}
+
+			emailData := emailWarnings{
+				Subject:  "Alert from the Water Softener",
+				Header:   "Warning! The Salt Sensor says...",
+				Warnings: warnings,
+				Footer:   "This email is from the Salt Sensor Server",
+			}
+			sendWarningEmail(emailData, emails...)
 		}
 	}
 }
