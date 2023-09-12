@@ -884,7 +884,7 @@ func checkSaltLevels() {
 
 			logger.Error.Printf("Error querying readings for device %s : %s", device.Address, err.Error())
 
-		} else {
+		} else if reading.Rows != 0 {
 
 			warnings := []string{}
 
