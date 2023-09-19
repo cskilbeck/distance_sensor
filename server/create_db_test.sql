@@ -17,6 +17,9 @@ CREATE TABLE notifications (
         notification_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         device_id INT NOT NULL,
         account_id INT NOT NULL,
+        notification_distance_warning_threshold INT NOT NULL DEFAULT 10,
+        notification_vbat_warning_threshold INT NOT NULL DEFAULT 750,
+        notification_time_warning_threshold INT NOT NULL DEFAULT 24,
         PRIMARY KEY(notification_id));
 
 -- devices
@@ -26,9 +29,6 @@ CREATE TABLE devices (
         device_address VARCHAR(12) UNIQUE NOT NULL,
         device_name VARCHAR(64) UNIQUE,
         device_account_owner INT,
-        device_warning_threshold SMALLINT UNSIGNED DEFAULT 10,
-        vbat_warning_threshold SMALLINT UNSIGNED DEFAULT 750,
-        time_warning_threshold SMALLINT UNSIGNED DEFAULT 24,
         sleep_count SMALLINT DEFAULT 304,
         PRIMARY KEY(device_id));
 
@@ -46,55 +46,3 @@ CREATE TABLE readings (
 
 CREATE INDEX readings_index 
 ON readings (device_id, reading_timestamp);
-
--- DEBUG
-
-INSERT INTO accounts (account_email) VALUES ('charlie@skilbeck.com');   -- 1
-INSERT INTO accounts (account_email) VALUES ('rachel@skilbeck.com');    -- 2
-
-INSERT INTO devices (
-                device_address,
-                device_name,
-                device_account_owner,
-                device_warning_threshold,
-                vbat_warning_threshold,
-                time_warning_threshold,
-                sleep_count)
-        VALUES (
-                'AABBCCDDEEFF',
-                'device1',
-                1,
-                10,
-                750,
-                24,
-                304);
-
-INSERT INTO readings (
-                device_id,
-                reading_vbat,
-                reading_distance,
-                reading_flags,
-                reading_rssi,
-                reading_timestamp)
-        VALUES (
-                1,
-                740,
-                230,
-                6,
-                -50,
-                '2023-09-07 14:01:57');
-
-INSERT INTO notifications (
-                device_id,
-                account_id)
-        VALUES (
-                1,
-                1);
-
-INSERT INTO notifications (
-                device_id,
-                account_id)
-        VALUES (
-                1,
-                2);
-

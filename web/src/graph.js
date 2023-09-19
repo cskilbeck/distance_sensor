@@ -6,7 +6,7 @@ let chart;
 
 // where to get the data from
 
-let host = "vibue.com";
+let host = "vibue.com/salt_api";
 //let host = "localhost";
 
 // graph settings (formats, colors etc) - see init_settings()

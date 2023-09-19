@@ -1,4 +1,4 @@
-module github.com/cskilbeck/salt_server
+module salt_server
 
 go 1.20
 

@@ -11,17 +11,16 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
-	"io"
-	"log"
-	"mime/quotedprintable"
 	"net/http"
-	"net/smtp"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"salt_server/dailyalarm"
+	"salt_server/emailsender"
+	"salt_server/logger"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/julienschmidt/httprouter"
@@ -38,12 +37,9 @@ type sensorSettings struct {
 // Device identifier
 
 type device struct {
-	Id                   int    `json:"id"`                      // device Id
-	Address              string `json:"address"`                 // mac address
-	Name                 string `json:"name"`                    // user defined name
-	WarningThreshold     uint16 `json:"warning_threshold"`       // percent level below which a warning email is sent
-	VbatWarningThreshold uint16 `json:"vbat_warning_threshold"`  // vbat warning level in centivolts (10mA units)
-	TimeWarningThreshold uint16 `json:"time_warning_threashold"` // hours since a reading warning threshold
+	Id      int    `json:"id"`      // device Id
+	Address string `json:"address"` // mac address
+	Name    string `json:"name"`    // user defined name
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -88,41 +84,6 @@ type global_credentials struct {
 	SMTPAccount  string `json:"smtp_account"`
 	SMTPPassword string `json:"smtp_password"`
 }
-
-//////////////////////////////////////////////////////////////////////
-// Logging admin
-
-const (
-	logLevelDebug int = iota
-	logLevelVerbose
-	logLevelInfo
-	logLevelWarning
-	logLevelError
-	logLevelFatal
-	numLogLevels
-)
-
-var logLevelNames = [numLogLevels]string{
-	"debug",
-	"verbose",
-	"info",
-	"warning",
-	"error",
-	"fatal",
-}
-
-var logLevel = logLevelInfo // default log level is info
-
-type loggers struct {
-	Debug   *log.Logger
-	Verbose *log.Logger
-	Info    *log.Logger
-	Warning *log.Logger
-	Error   *log.Logger
-	Fatal   *log.Logger
-}
-
-var logger loggers
 
 //////////////////////////////////////////////////////////////////////
 // Warning email admin
@@ -173,58 +134,6 @@ func saltDistanceToPercent(distance uint16) uint16 {
 }
 
 //////////////////////////////////////////////////////////////////////
-// get len of longest string in a slice of strings
-
-func longestStringLength(s []string) int {
-
-	longest := 0
-	for _, str := range s {
-		l := len(str)
-		if l > longest {
-			longest = l
-		}
-	}
-	return longest
-}
-
-//////////////////////////////////////////////////////////////////////
-// e.g.
-// SendEmail("smtp.gmail.com", "myaccount@gmail.com", "mypassword", "Tommy", "The Subject", "text/plain", "Testing 123", "someone@outlook.com")
-// SendEmail("smtp.gmail.com", "myaccount@gmail.com", "mypassword", "Tommy", "The Subject", "text/html", "<h2>Testing 123</h2>", "someone@outlook.com", "another@aol.com")
-// SendEmail("smtp.gmail.com", "myaccount@gmail.com", "mypassword", "Tommy", "The Subject", "text/plain", "Testing 123", "someone@outlook.com,another@aol.com")
-// SendEmail("smtp.gmail.com", "myaccount@gmail.com", "mypassword", "Tommy", "The Subject", "text/plain", "Testing 123", recipients_slice)
-
-func SendEmail(server, user, password, from, subject, message, contentType string, recipients ...string) error {
-
-	smtpTemplate := []string{
-		"From: %s",
-		"To: %s",
-		"Subject: %s",
-		"MIME-Version: 1.0",
-		"Content-Type: %s; charset=\"utf-8\"",
-		"Content-Transfer-Encoding: quoted-printable",
-		"Content-Disposition: inline",
-		"",
-		"%s\r\n",
-	}
-
-	var body bytes.Buffer
-	q := quotedprintable.NewWriter(&body)
-	_, err := q.Write([]byte(message))
-	q.Close()
-	if err != nil {
-		return err
-	}
-
-	template := strings.Join(smtpTemplate, "\r\n")
-	rcp := strings.Join(recipients, ",")
-	name := fmt.Sprintf("%s <%s>", from, user)
-	lines := fmt.Sprintf(template, name, rcp, subject, contentType, body.String())
-	auth := smtp.PlainAuth("", user, password, server)
-	return smtp.SendMail(server+":587", auth, user, recipients, []byte(lines))
-}
-
-//////////////////////////////////////////////////////////////////////
 
 func sendWarningEmail(data emailWarnings, recipients ...string) error {
 
@@ -237,88 +146,21 @@ func sendWarningEmail(data emailWarnings, recipients ...string) error {
 		return err
 	}
 
-	out := new(bytes.Buffer)
+	html := new(bytes.Buffer)
 
-	if err = t.Execute(out, data); err != nil {
+	if err = t.Execute(html, data); err != nil {
 		logger.Error.Printf("Error executing email template: %s", err.Error())
 		return err
 	}
 
-	if err = SendEmail(credentials.SMTPServer, credentials.SMTPAccount, credentials.SMTPPassword, "Water Softener", data.Subject, out.String(), "text/html", recipients...); err != nil {
+	if err = emailsender.SendEmail(credentials.SMTPServer, 587,
+		credentials.SMTPAccount, credentials.SMTPPassword,
+		"Water Softener", data.Subject, html.String(),
+		"text/html", recipients...); err != nil {
+
 		logger.Error.Printf("Error sending email: %s", err.Error())
 	}
 	logger.Info.Printf("Sent warning email to %d recipient(s)", len(recipients))
-	return nil
-}
-
-//////////////////////////////////////////////////////////////////////
-// setup log level by name
-
-func setupLogging(log_level_name string) (e error) {
-
-	log_writers := [numLogLevels]io.Writer{
-		os.Stdout,
-		os.Stdout,
-		os.Stdout,
-		os.Stderr,
-		os.Stderr,
-		os.Stderr,
-	}
-
-	longest_name := longestStringLength(logLevelNames[:])
-
-	// find the log level by name
-
-	found := false
-
-	if len(log_level_name) != 0 {
-
-		for i, name := range logLevelNames {
-
-			if strings.EqualFold(log_level_name, name) {
-
-				logLevel = i
-				found = true
-				break
-			}
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("unknown log level \"%s\"", log_level_name)
-	}
-
-	// create a logger for each log_level
-
-	var logs []*log.Logger = make([]*log.Logger, numLogLevels)
-
-	// use io.Discard for loggers below requested level
-
-	for i := 0; i < logLevel; i++ {
-
-		logs[i] = log.New(io.Discard, "", 0)
-	}
-
-	// stdout or stderr for enabled levels
-
-	for i := logLevel; i < numLogLevels; i++ {
-
-		name := logLevelNames[i]
-		padded := name + strings.Repeat(" ", longest_name-len(name)) + ":"
-		logs[i] = log.New(log_writers[i], padded, log.Ldate|log.Ltime|log.Lmicroseconds)
-	}
-
-	// setup for use
-
-	logger = loggers{
-		Debug:   logs[logLevelDebug],
-		Verbose: logs[logLevelVerbose],
-		Info:    logs[logLevelInfo],
-		Warning: logs[logLevelWarning],
-		Error:   logs[logLevelError],
-		Fatal:   logs[logLevelFatal],
-	}
-
 	return nil
 }
 
@@ -584,20 +426,13 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 //////////////////////////////////////////////////////////////////////
 // query for all the devices
 
-func queryDevices() (response getDevicesResponse, status int, err error) {
-
-	var db *sql.DB
-
-	if db, err = openDatabase(); err != nil {
-		return getDevicesResponse{}, http.StatusInternalServerError, fmt.Errorf("error opening database: %s", err.Error())
-	}
-	defer db.Close()
+func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err error) {
 
 	// get the devices
 
 	var query *sql.Rows
 
-	if query, err = db.Query(`SELECT device_id, device_address, IFNULL(device_name, '-'), device_warning_threshold, vbat_warning_threshold FROM devices`); err != nil {
+	if query, err = db.Query(`SELECT device_id, device_address, IFNULL(device_name, '-') FROM devices`); err != nil {
 		return getDevicesResponse{}, http.StatusInternalServerError, err
 	}
 
@@ -611,13 +446,11 @@ func queryDevices() (response getDevicesResponse, status int, err error) {
 		var id int
 		var addr string
 		var name string
-		var warningThreshold uint16
-		var vbatWarningThreshold uint16
-		if err = query.Scan(&id, &addr, &name, &warningThreshold, &vbatWarningThreshold); err != nil {
+		if err = query.Scan(&id, &addr, &name); err != nil {
 			return getDevicesResponse{}, http.StatusInternalServerError, err
 		}
 		rows += 1
-		response.Device = append(response.Device, device{Id: id, Address: addr, Name: name, WarningThreshold: warningThreshold, VbatWarningThreshold: vbatWarningThreshold})
+		response.Device = append(response.Device, device{Id: id, Address: addr, Name: name})
 	}
 	logger.Debug.Printf("Fetched %d rows", rows)
 	response.Rows = rows
@@ -702,7 +535,15 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-	response, status, err := queryDevices()
+	var db *sql.DB
+	var err error
+
+	if db, err = openDatabase(); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+	}
+	defer db.Close()
+
+	response, status, err := queryDevices(db)
 
 	if err != nil {
 		respondError(w, status, err.Error())
@@ -855,20 +696,16 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 }
 
 //////////////////////////////////////////////////////////////////////
-// Check if salt level below threshold for each device, send warning email if it is
+// Check if salt level below threshold for each device, send warning emails to registered recipients if it is
 
 func checkSaltLevels() {
 
 	logger.Info.Printf("Checking Salt Levels daily")
 
-	devices, _, err := queryDevices()
-
-	if err != nil {
-		logger.Error.Printf("Can't query devices!? (%s)", err.Error())
-		return
-	}
+	// open the database
 
 	var db *sql.DB
+	var err error
 
 	if db, err = openDatabase(); err != nil {
 		logger.Error.Printf("Error opening database: %s", err.Error())
@@ -876,15 +713,35 @@ func checkSaltLevels() {
 	}
 	defer db.Close()
 
+	// get all the devices
+
+	devices, _, err := queryDevices(db)
+
+	if err != nil {
+		logger.Error.Printf("Can't query devices!? (%s)", err.Error())
+		return
+	}
+
+	// for each device
+
 	for _, device := range devices.Device {
 
-		logger.Verbose.Printf("Checking Salt Level for device %s (%s)", device.Address, device.Name)
+		var deviceAddress48 uint64
+		var err error
 
-		if deviceAddress48, err := strconv.ParseUint(device.Address, 16, 48); err != nil {
+		// check the device address is valid 48 bit hex (e.g. a mac address)
+
+		if deviceAddress48, err = strconv.ParseUint(device.Address, 16, 48); err != nil {
 
 			logger.Error.Printf("Device %s has bad address: %s", device.Address, err.Error())
+			continue
+		}
 
-		} else if reading, _, err := queryReadings(time.Time{}, time.Now().Add(time.Hour*24), 1, deviceAddress48); err != nil {
+		// get the most recent reading for this device
+
+		logger.Verbose.Printf("Notifications for device %s (%s) (id = %d)?", device.Address, device.Name, device.Id)
+
+		if reading, _, err := queryReadings(time.Time{}, time.Now().Add(time.Hour*24), 1, deviceAddress48); err != nil {
 
 			logger.Error.Printf("Error querying readings for device %s : %s", device.Address, err.Error())
 
@@ -894,45 +751,18 @@ func checkSaltLevels() {
 
 		} else {
 
-			warnings := []string{}
-
-			// warn about salt level
-
-			saltPercent := saltDistanceToPercent(reading.Distance[0])
-
-			if saltPercent < device.WarningThreshold {
-				warnings = append(warnings, fmt.Sprintf("Salt level is %d%%", saltPercent))
-			}
-
-			// warn about vbat level
-
-			vbat := reading.Vbat[0]
-
-			if vbat < device.VbatWarningThreshold {
-				warnings = append(warnings, fmt.Sprintf("Battery level is %.1f volts", float64(vbat)/100.0))
-			}
-
-			// warn if no readings for > 24 hours
-
-			hours_since := time.Now().UTC().Sub(time.Unix(int64(reading.Time[0]), 0)).Hours()
-
-			if len(warnings) != 0 || hours_since > float64(device.TimeWarningThreshold) {
-				warnings = append(warnings, fmt.Sprintf("Last reading was %.0f hours ago", hours_since))
-			}
-
-			if len(warnings) == 0 {
-
-				logger.Info.Printf("No warning for %s (%s)", device.Address, device.Name)
-				continue
-			}
-
-			logger.Verbose.Printf("Sending alert email for device %s (%s)", device.Address, device.Name)
+			// get the list of notification recipients and their warning levels for this device
 
 			var query *sql.Rows
 
-			if query, err = db.Query(`SELECT account_email FROM notifications
-										LEFT JOIN accounts
-											ON notifications.account_id = accounts.account_id
+			if query, err = db.Query(`SELECT
+											notification_distance_warning_threshold,
+											notification_vbat_warning_threshold,
+											notification_time_warning_threshold,
+											account_email
+										FROM notifications
+											LEFT JOIN accounts ON
+												notifications.account_id = accounts.account_id
 										WHERE device_id = ?;`, device.Id); err != nil {
 
 				if err == sql.ErrNoRows {
@@ -944,36 +774,68 @@ func checkSaltLevels() {
 				continue
 			}
 
-			emails := []string{}
+			// for each notification
 
 			for query.Next() {
 
+				var distance_threshold int32
+				var vbat_threshold int32
+				var time_threshold int32
 				var email string
 
-				if err = query.Scan(&email); err != nil {
+				// get the notification levels
 
-					logger.Error.Printf("Error reading notification email address for device %s", device.Address)
+				if err = query.Scan(&distance_threshold, &vbat_threshold, &time_threshold, &email); err != nil {
+
+					logger.Error.Printf("Error reading notification data for device %s", device.Address)
 					continue
 				}
 
-				logger.Info.Printf("Sending email to %s", email)
+				warnings := []string{}
 
-				emails = append(emails, email)
+				// warn about salt level if required
+
+				saltPercent := saltDistanceToPercent(reading.Distance[0])
+
+				if saltPercent < uint16(distance_threshold) {
+					warnings = append(warnings, fmt.Sprintf("Salt level is %d%%", saltPercent))
+				}
+
+				// warn about vbat level if required
+
+				vbat := reading.Vbat[0]
+
+				if vbat < uint16(vbat_threshold) {
+					warnings = append(warnings, fmt.Sprintf("Battery level is %.1f volts", float64(vbat)/100.0))
+				}
+
+				// warn if no readings for > ?? hours if required (or any other warnings are required)
+
+				last_reading := time.Unix(int64(reading.Time[0]), 0)
+				hours_since := int32(time.Now().UTC().Sub(last_reading).Hours())
+
+				if len(warnings) != 0 || hours_since > time_threshold {
+					warnings = append(warnings, fmt.Sprintf("Last reading was %d hours ago", hours_since))
+				}
+
+				if len(warnings) == 0 {
+
+					logger.Info.Printf("No warning for %s on %s(%s)", email, device.Name, device.Address)
+					continue
+				}
+
+				// send the warning email to this notification recipient
+
+				logger.Verbose.Printf("Sending alert email to %s for device %s (%s)", email, device.Name, device.Address)
+
+				emailData := emailWarnings{
+					Subject:  "Alert from the Water Softener",
+					Header:   "Warning! The Salt Sensor says...",
+					Warnings: warnings,
+					Footer:   "This email is from the Salt Sensor Server",
+				}
+				sendWarningEmail(emailData, email)
 			}
-
-			if len(emails) == 0 {
-
-				logger.Info.Printf("No emails for device %s", device.Address)
-				continue
-			}
-
-			emailData := emailWarnings{
-				Subject:  "Alert from the Water Softener",
-				Header:   "Warning! The Salt Sensor says...",
-				Warnings: warnings,
-				Footer:   "This email is from the Salt Sensor Server",
-			}
-			sendWarningEmail(emailData, emails...)
 		}
 	}
 }
@@ -995,16 +857,10 @@ func main() {
 	// command line parameters
 
 	var credentialsFilename string
-	var keyFilename string
-	var certFilename string
 	var logLevelName string
-	var httpOnly bool
 
 	flag.StringVar(&credentialsFilename, "credentials", "", "Specify credentials filename (required)")
-	flag.StringVar(&keyFilename, "key", "", "Specify TLS key filename (required)")
-	flag.StringVar(&certFilename, "cert", "", "Specify TLS cert filename (required)")
-	flag.StringVar(&logLevelName, "log_level", logLevelNames[logLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logLevelNames[:], "|")))
-	flag.BoolVar(&httpOnly, "http_only", false, "Only serve through HTTP:5002 (DEBUG ONLY)")
+	flag.StringVar(&logLevelName, "log_level", logger.LogLevelNames[logger.LogLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logger.LogLevelNames[:], "|")))
 	flag.Parse()
 
 	// check command line parameters, setup logging and database credentials
@@ -1015,14 +871,6 @@ func main() {
 		errs = append(errs, fmt.Errorf("missing -log_level"))
 	}
 
-	if len(keyFilename) == 0 && !httpOnly {
-		errs = append(errs, fmt.Errorf("missing -key"))
-	}
-
-	if len(certFilename) == 0 && !httpOnly {
-		errs = append(errs, fmt.Errorf("missing -cert"))
-	}
-
 	if len(credentialsFilename) == 0 {
 		errs = append(errs, fmt.Errorf("missing -credentials"))
 	} else {
@@ -1031,7 +879,7 @@ func main() {
 		}
 	}
 
-	if err := setupLogging(logLevelName); err != nil {
+	if err := logger.Init(logLevelName); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -1052,18 +900,8 @@ func main() {
 	logger.Info.Println()
 	logger.Info.Printf("########## SALT SENSOR SERVICE BEGINS ##########")
 
-	logger.Verbose.Printf("Log level: %s", logLevelNames[logLevel])
+	logger.Verbose.Printf("Log level: %s", logger.LogLevelNames[logger.LogLevel])
 	logger.Verbose.Printf("Credentials file: %s", credentialsFilename)
-
-	if !httpOnly {
-
-		logger.Verbose.Printf("Key file: %s", keyFilename)
-		logger.Verbose.Printf("Cert file: %s", certFilename)
-
-	} else {
-
-		logger.Warning.Printf("NO HTTPS ENABLED - EVERYTHING SERVED THROUGH HTTP:5002!!!!")
-	}
 
 	// database config
 
@@ -1083,77 +921,14 @@ func main() {
 		ParseTime:            true,
 	}).FormatDSN()
 
-	// task admin
-
-	var waitGroup sync.WaitGroup
-
-	taskCount := 2
-
-	if httpOnly {
-		taskCount = 1
-	}
-
-	waitGroup.Add(taskCount)
-
 	// daily alarm to check levels and send alert email if necessary
 
-	// send the alarm channel alarmQuit to quit the dailyAlarm
+	var alarmChannel chan dailyalarm.AlarmNotify
+	var err error
 
-	type alarmNotify int
+	if alarmChannel, err = dailyalarm.Set(6, 0, checkSaltLevels); err != nil {
 
-	const (
-		alarmQuit alarmNotify = iota
-		alarmFire
-	)
-
-	alarm := make(chan alarmNotify)
-
-	dailyAlarm := func(hh, mm int, callback func()) {
-
-		logger.Verbose.Printf("Daily alarm set for %02d:%02d (UTC now: %s)", hh, mm, time.Now().UTC().Format(time.RFC3339))
-
-		for {
-
-			now := time.Now().UTC()
-
-			day := now.Day()
-
-			if now.Hour() >= hh {
-				day += 1
-			}
-
-			after := time.Until(time.Date(now.Year(), now.Month(), day, hh, mm, 0, 0, time.UTC))
-
-			time.AfterFunc(after, func() {
-				alarm <- alarmFire
-			})
-
-			if <-alarm == alarmQuit {
-				logger.Info.Printf("Daily alarm quitting")
-				return
-			}
-			logger.Info.Printf("Daily alarm has gone off")
-			callback()
-		}
-	}
-
-	go dailyAlarm(6, 00, checkSaltLevels)
-
-	// utility func to run a server (http or https)
-
-	runServer := func(name string, listener func() error) {
-
-		logger.Verbose.Printf("%s server starting", name)
-
-		err := listener()
-
-		if errors.Is(err, http.ErrServerClosed) {
-			logger.Verbose.Printf("%s server closed", name)
-
-		} else if err != nil {
-			logger.Error.Printf("Error starting %s server: %s", name, err.Error())
-		}
-		waitGroup.Done()
+		logger.Error.Printf("Error setting up daily alarm: %s", err.Error())
 	}
 
 	// HTTP always available
@@ -1164,27 +939,20 @@ func main() {
 	httpRouter.GET("/readings", logged(getReadings))
 	httpRouter.GET("/devices", logged(getDevices))
 
-	go runServer("HTTP", func() error {
-		return http.ListenAndServe(":5002", httpRouter)
-	})
+	logger.Verbose.Printf("HTTP server starting")
 
-	if !httpOnly {
+	err = http.ListenAndServe(":50002", httpRouter)
 
-		httpsRouter := makeRouter()
+	if errors.Is(err, http.ErrServerClosed) {
+		logger.Verbose.Printf("HTTP server closed")
 
-		httpsRouter.GET("/readings", logged(getReadings))
-		httpsRouter.GET("/devices", logged(getDevices))
-
-		go runServer("HTTPS", func() error {
-			return http.ListenAndServeTLS(":443", certFilename, keyFilename, httpsRouter)
-		})
+	} else if err != nil {
+		logger.Error.Printf("Error starting HTTP server: %s", err.Error())
 	}
-
-	waitGroup.Wait()
 
 	// quit the daily alarm
 
-	alarm <- alarmQuit
+	alarmChannel <- dailyalarm.AlarmQuit
 
 	logger.Info.Printf("---------- SALT SENSOR SERVICE ENDS ----------")
 }

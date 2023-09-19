@@ -17,6 +17,9 @@ CREATE TABLE notifications (
         notification_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         device_id INT NOT NULL,
         account_id INT NOT NULL,
+        notification_distance_warning_threshold INT NOT NULL DEFAULT 10,
+        notification_vbat_warning_threshold INT NOT NULL DEFAULT 750,
+        notification_time_warning_threshold INT NOT NULL DEFAULT 24,
         PRIMARY KEY(notification_id));
 
 -- devices
@@ -26,9 +29,6 @@ CREATE TABLE devices (
         device_address VARCHAR(12) UNIQUE NOT NULL,
         device_name VARCHAR(64) UNIQUE,
         device_account_owner INT,
-        device_warning_threshold SMALLINT UNSIGNED DEFAULT 10,
-        vbat_warning_threshold SMALLINT UNSIGNED DEFAULT 750,
-        time_warning_threshold SMALLINT UNSIGNED DEFAULT 24,
         sleep_count SMALLINT DEFAULT 304,
         PRIMARY KEY(device_id));
 
