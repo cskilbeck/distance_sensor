@@ -1,0 +1,149 @@
+*************************************************************
+FileName = esp32c2_devboard.GBR
+AutoAperture = True
+*************************************************************
+Generating : Top Layer
+      File : esp32c2_devboard_Copper_Signal_Top.gbr
+
+    Adding Layer      : Top Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D10
+    D11
+    D12
+    D13
+    D14
+    D15
+    D16
+    D17
+    D18
+*************************************************************
+
+*************************************************************
+Generating : Layer 1
+      File : esp32c2_devboard_Copper_Signal_1.gbr
+
+    Adding Layer      : Layer 1
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D17
+    D18
+*************************************************************
+
+*************************************************************
+Generating : Layer 2
+      File : esp32c2_devboard_Copper_Signal_2.gbr
+
+    Adding Layer      : Layer 2
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D17
+    D18
+*************************************************************
+
+*************************************************************
+Generating : Bottom Layer
+      File : esp32c2_devboard_Copper_Signal_Bot.gbr
+
+    Adding Layer      : Bottom Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D15
+    D17
+    D18
+*************************************************************
+
+*************************************************************
+Generating : Bottom Solder
+      File : esp32c2_devboard_Soldermask_Bot.gbr
+
+    Adding Layer      : Bottom Solder
+
+    Adding Layer      : Bottom Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D19
+*************************************************************
+
+*************************************************************
+Generating : Top Overlay
+      File : esp32c2_devboard_Legend_Top.gbr
+
+    Adding Layer      : Top Overlay
+
+
+Used DCodes :
+    D20
+*************************************************************
+
+*************************************************************
+Generating : Top Paste
+      File : esp32c2_devboard_Paste_Top.gbr
+
+    Adding Layer      : Top Paste
+
+    Adding Layer      : Top Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D10
+    D11
+    D12
+    D14
+*************************************************************
+
+*************************************************************
+Generating : Top Solder
+      File : esp32c2_devboard_Soldermask_Top.gbr
+
+    Adding Layer      : Top Solder
+
+    Adding Layer      : Top Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D19
+    D21
+    D22
+    D23
+    D24
+*************************************************************
+
+*************************************************************
+Generating : Profile
+      File : esp32c2_devboard_Profile.gbr
+
+
+Used DCodes :
+    D25
+*************************************************************
+
+*************************************************************
+Generating : Plated through-hole drill file
+      File : esp32c2_devboard_PTH_Drill.gbr
+
+
+Used DCodes :
+    D26
+    D27
+*************************************************************
+
