@@ -1,0 +1,6 @@
+esp_idf_project_configuration.json
+*.code-workspace
+.vscode
+build/
+sdkconfig
+sdkconfig.old

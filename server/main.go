@@ -110,7 +110,9 @@ const emailTemplate string = `
 
 var credentials global_credentials
 
-const databaseName = "salt_sensor"
+const databaseName = "salt_sensor_test"
+
+// const databaseName = "salt_sensor"
 
 var dbDSNString string
 
@@ -552,6 +554,72 @@ func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params
 }
 
 //////////////////////////////////////////////////////////////////////
+// add a reading to the database
+
+func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, rssi int64) (sleepCount int, err error) {
+
+	logger.Verbose.Printf("vbat: %d, reading: %d, flags: %d, device: %012x, rssi: %d, distance: %d", vbat, distance_mm, flags, device, rssi, distance_mm)
+
+	var db *sql.DB
+
+	if db, err = openDatabase(); err != nil {
+		return 0, fmt.Errorf("error opening database: %s", err.Error())
+	}
+	defer db.Close()
+
+	// get device id or insert new device
+
+	deviceAddress := fmt.Sprintf("%012x", device)
+
+	logger.Debug.Printf("Get device id for %s", deviceAddress)
+
+	var deviceAddress48 int64
+	var insert sql.Result
+
+	if err = db.QueryRow(`SELECT
+							device_id, sleep_count
+							FROM devices
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceAddress48, &sleepCount); err != nil {
+
+		if err == sql.ErrNoRows {
+
+			logger.Info.Printf("New device: %s", deviceAddress)
+
+			if insert, err = db.Exec(`INSERT INTO devices
+										(device_address) VALUES (?)`, deviceAddress); err == nil {
+
+				deviceAddress48, err = insert.LastInsertId()
+			}
+		}
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("database error adding device %s: %s", deviceAddress, err.Error())
+	}
+
+	logger.Debug.Printf("Device ID %d", deviceAddress48)
+
+	// add the reading
+
+	var readingId int64
+
+	if insert, err = db.Exec(`INSERT INTO readings
+								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
+                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, deviceAddress48, vbat, distance_mm, flags, rssi); err == nil {
+
+		readingId, err = insert.LastInsertId()
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("database error adding reading: %s", err.Error())
+	}
+
+	logger.Debug.Printf("Reading ID %d", readingId)
+
+	return sleepCount, nil
+}
+
+//////////////////////////////////////////////////////////////////////
 // put a new reading
 // parameters:
 // vbat uint64			vbat in 100mV units (i.e. 843 = 8.43 volts)
@@ -590,32 +658,37 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 	var device uint64
 	var flags uint64
 	var rssi int64
-	var resolution int64
+	var resolution int64 = 0
 
-	q := r.URL.Query()
+	query := r.URL.Query()
 
-	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, q); err != nil {
+	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if distance, err = parseQueryParamUnsigned("distance", 10, 16, q); err != nil {
+	if distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if device, err = parseQueryParamUnsigned("device", 16, 48, q); err != nil {
+	if device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if flags, err = parseQueryParamUnsigned("flags", 10, 16, q); err != nil {
+	if flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if rssi, err = parseQueryParamSigned("rssi", 10, 8, q); err != nil {
+	if rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
 		errors = append(errors, err.Error())
 	}
 
-	if resolution, err = parseQueryParamSigned("resolution", 10, 32, q); err != nil {
-		errors = append(errors, err.Error())
+	// if resolution not specified, then distance is in mm
+
+	if len(query["resolution"]) != 0 {
+
+		if resolution, err = parseQueryParamSigned("resolution", 10, 32, query); err != nil {
+			errors = append(errors, err.Error())
+		}
 	}
 
 	if len(errors) != 0 {
@@ -623,76 +696,85 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 		return
 	}
 
-	// counter counts at this many per second (eg 8000000)
+	distance_mm := int32(distance)
 
-	time_scale := 48000000.0 / float32(resolution)
+	if resolution != 0 {
 
-	const speed_of_sound_mm_per_sec = 346000.0
+		// counter counts at this many per second (eg 8000000)
 
-	distance_mm := int32(float32(distance) / time_scale * speed_of_sound_mm_per_sec / 2.0)
+		time_scale := 48000000.0 / float32(resolution)
 
-	logger.Verbose.Printf("vbat: %d, reading: %d, flags: %d, device: %012x, rssi: %d, distance: %d", vbat, distance, flags, device, rssi, distance_mm)
+		const speed_of_sound_mm_per_sec = 346000.0
 
-	var db *sql.DB
-
-	if db, err = openDatabase(); err != nil {
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+		distance_mm = int32(float32(distance) / time_scale * speed_of_sound_mm_per_sec / 2.0)
 	}
-	defer db.Close()
 
-	// get device id or insert new device
-
-	deviceAddress := fmt.Sprintf("%012x", device)
-
-	logger.Debug.Printf("Get device id for %s", deviceAddress)
-
-	var deviceAddress48 int64
 	var sleepCount int
-	var insert sql.Result
-
-	if err = db.QueryRow(`SELECT
-							device_id, sleep_count
-							FROM devices
-							WHERE device_address = ?;`, deviceAddress).Scan(&deviceAddress48, &sleepCount); err != nil {
-
-		if err == sql.ErrNoRows {
-
-			logger.Info.Printf("New device: %s", deviceAddress)
-
-			if insert, err = db.Exec(`INSERT INTO devices
-										(device_address) VALUES (?)`, deviceAddress); err == nil {
-
-				deviceAddress48, err = insert.LastInsertId()
-			}
-		}
-	}
+	sleepCount, err = insertReading(device, vbat, distance_mm, flags, rssi)
 
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error adding device %s: %s", deviceAddress, err.Error())
+		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	logger.Debug.Printf("Device ID %d", deviceAddress48)
-
-	// add the reading
-
-	var readingId int64
-
-	if insert, err = db.Exec(`INSERT INTO readings
-								(device_id, reading_vbat, reading_distance, reading_flags, reading_rssi, reading_timestamp)
-                               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`, deviceAddress48, vbat, distance_mm, flags, rssi); err == nil {
-
-		readingId, err = insert.LastInsertId()
-	}
-
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Database error adding reading: %s", err.Error()))
-		return
-	}
-
-	logger.Debug.Printf("Reading ID %d", readingId)
-
 	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCount}})
+}
+
+//////////////////////////////////////////////////////////////////////
+// putReading2 for the newer sensor
+// no resolution (it's already in mm)
+// sleep_count return is in seconds, not some dodgy other thing
+
+func putReading2(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	var err error
+
+	// parse the query string
+
+	var errors = make([]string, 0)
+
+	var vbat uint64
+	var distance uint64
+	var device uint64
+	var flags uint64
+	var rssi int64
+
+	query := r.URL.Query()
+
+	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	// if resolution not specified, then distance is in mm
+
+	if len(errors) != 0 {
+		respondError(w, http.StatusBadRequest, errors...)
+		return
+	}
+
+	var sleepCountSeconds int
+	sleepCountSeconds, err = insertReading(device, vbat, int32(distance), flags, rssi)
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCountSeconds}})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -935,13 +1017,14 @@ func main() {
 
 	httpRouter := makeRouter()
 
-	httpRouter.PUT("/reading", logged(putReading)) // PUT /reading only available via HTTP
+	httpRouter.PUT("/reading", logged(putReading))   // PUT /reading only available via HTTP
+	httpRouter.PUT("/reading2", logged(putReading2)) // PUT /reading only available via HTTP
 	httpRouter.GET("/readings", logged(getReadings))
 	httpRouter.GET("/devices", logged(getDevices))
 
 	logger.Verbose.Printf("HTTP server starting")
 
-	err = http.ListenAndServe(":50002", httpRouter)
+	err = http.ListenAndServe(":5002", httpRouter)
 
 	if errors.Is(err, http.ErrServerClosed) {
 		logger.Verbose.Printf("HTTP server closed")

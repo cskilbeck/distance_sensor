@@ -1,0 +1,14 @@
+blue        vcc
+grey        io0
+purple      gnd
+green       en
+orange      rx
+yellow      tx
+
+
+vcc
+tx
+rx
+io9
+gnd
+en
