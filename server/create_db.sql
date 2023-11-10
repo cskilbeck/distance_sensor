@@ -28,8 +28,7 @@ CREATE TABLE devices (
         device_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         device_address VARCHAR(12) UNIQUE NOT NULL,
         device_name VARCHAR(64) UNIQUE,
-        device_account_owner INT,
-        sleep_count SMALLINT DEFAULT 304,
+        sleep_count SMALLINT DEFAULT 21600,
         PRIMARY KEY(device_id));
 
 -- readings

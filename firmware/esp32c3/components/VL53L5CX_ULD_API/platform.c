@@ -6,7 +6,7 @@
 #include "esp_log.h"
 #include "util.h"
 
-LOG_TAG("platform");
+LOG_CONTEXT("platform");
 
 //////////////////////////////////////////////////////////////////////
 

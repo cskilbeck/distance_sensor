@@ -20,7 +20,7 @@ import (
 
 	"salt_server/dailyalarm"
 	"salt_server/emailsender"
-	"salt_server/logger"
+	log "salt_server/logger"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/julienschmidt/httprouter"
@@ -31,6 +31,19 @@ import (
 
 type sensorSettings struct {
 	SleepCount int `json:"sleep_count"`
+}
+
+//////////////////////////////////////////////////////////////////////
+// paramaters for PUT /reading
+// v1 also requires resolution int64
+// this is all v2 needs
+
+type readingParams struct {
+	vbat     uint64 // vbat_mv
+	distance uint64 // distance in mm (v2) or... 'units' (v1)
+	device   uint64 // 48 bit mac address of the device sending the reading
+	flags    uint64 // flags (only v1)
+	rssi     int64  // wifi rssi
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -75,7 +88,7 @@ type getDevicesResponse struct {
 }
 
 //////////////////////////////////////////////////////////////////////
-// Database credentials
+// Credentials for database, smtp
 
 type global_credentials struct {
 	Username     string `json:"username"`
@@ -120,8 +133,8 @@ var dbDSNString string
 
 func saltDistanceToPercent(distance uint16) uint16 {
 
-	const min_dist = 120
-	const max_dist = 235
+	const min_dist = 60
+	const max_dist = 360
 
 	max_range := max_dist - min_dist
 
@@ -144,14 +157,14 @@ func sendWarningEmail(data emailWarnings, recipients ...string) error {
 	t := template.New("email")
 
 	if t, err = t.Parse(emailTemplate); err != nil {
-		logger.Error.Printf("Error parsing email template: %s", err.Error())
+		log.Error.Printf("Error parsing email template: %s", err.Error())
 		return err
 	}
 
 	html := new(bytes.Buffer)
 
 	if err = t.Execute(html, data); err != nil {
-		logger.Error.Printf("Error executing email template: %s", err.Error())
+		log.Error.Printf("Error executing email template: %s", err.Error())
 		return err
 	}
 
@@ -160,9 +173,9 @@ func sendWarningEmail(data emailWarnings, recipients ...string) error {
 		"Water Softener", data.Subject, html.String(),
 		"text/html", recipients...); err != nil {
 
-		logger.Error.Printf("Error sending email: %s", err.Error())
+		log.Error.Printf("Error sending email: %s", err.Error())
 	}
-	logger.Info.Printf("Sent warning email to %d recipient(s)", len(recipients))
+	log.Info.Printf("Sent warning email to %d recipient(s)", len(recipients))
 	return nil
 }
 
@@ -196,7 +209,7 @@ func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 
 	if body, err = json.MarshalIndent(response, "", "  "); err != nil {
 
-		logger.Fatal.Panicf("Can't marshal json response: %s", err.Error())
+		log.Fatal.Panicf("Can't marshal json response: %s", err.Error())
 	}
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -208,7 +221,7 @@ func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 
 	if _, err = w.Write(body); err != nil {
 
-		logger.Error.Printf("Can't write response: %s", err.Error())
+		log.Error.Printf("Can't write response: %s", err.Error())
 	}
 }
 
@@ -320,7 +333,7 @@ func logged(h routeHandler) routeHandler {
 
 	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-		logger.Verbose.Printf("%s %s", r.Method, r.URL)
+		log.Verbose.Printf("%s %s", r.Method, r.URL)
 		h(w, r, params)
 	}
 }
@@ -337,7 +350,7 @@ func openDatabase() (*sql.DB, error) {
 		return nil, err
 	}
 
-	logger.Debug.Println("Database opened")
+	log.Debug.Println("Database opened")
 
 	return db, nil
 }
@@ -369,11 +382,11 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 		}
 	}
 
-	logger.Debug.Printf("Device ID %d", deviceAddress48)
+	log.Debug.Printf("Device ID %d", deviceAddress48)
 
 	// get the readings
 
-	logger.Debug.Printf("From: %s, To: %s, Count: %d", from.Format(time.RFC3339), to.Format(time.RFC3339), count)
+	log.Debug.Printf("From: %s, To: %s, Count: %d", from.Format(time.RFC3339), to.Format(time.RFC3339), count)
 
 	var sqlStatement *sql.Stmt
 
@@ -420,7 +433,7 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 			rows += 1
 		}
 	}
-	logger.Debug.Printf("Fetched %d rows", rows)
+	log.Debug.Printf("Fetched %d rows", rows)
 	response.Rows = rows
 	return response, http.StatusOK, nil
 }
@@ -454,7 +467,7 @@ func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err erro
 		rows += 1
 		response.Device = append(response.Device, device{Id: id, Address: addr, Name: name})
 	}
-	logger.Debug.Printf("Fetched %d rows", rows)
+	log.Debug.Printf("Fetched %d rows", rows)
 	response.Rows = rows
 
 	return response, http.StatusOK, nil
@@ -558,7 +571,7 @@ func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params
 
 func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, rssi int64) (sleepCount int, err error) {
 
-	logger.Verbose.Printf("vbat: %d, reading: %d, flags: %d, device: %012x, rssi: %d, distance: %d", vbat, distance_mm, flags, device, rssi, distance_mm)
+	log.Verbose.Printf("vbat: %d, reading: %d, flags: %d, device: %012x, rssi: %d, distance: %d", vbat, distance_mm, flags, device, rssi, distance_mm)
 
 	var db *sql.DB
 
@@ -571,7 +584,7 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 
 	deviceAddress := fmt.Sprintf("%012x", device)
 
-	logger.Debug.Printf("Get device id for %s", deviceAddress)
+	log.Debug.Printf("Get device id for %s", deviceAddress)
 
 	var deviceAddress48 int64
 	var insert sql.Result
@@ -583,7 +596,7 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 
 		if err == sql.ErrNoRows {
 
-			logger.Info.Printf("New device: %s", deviceAddress)
+			log.Info.Printf("New device: %s", deviceAddress)
 
 			if insert, err = db.Exec(`INSERT INTO devices
 										(device_address) VALUES (?)`, deviceAddress); err == nil {
@@ -597,7 +610,7 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 		return 0, fmt.Errorf("database error adding device %s: %s", deviceAddress, err.Error())
 	}
 
-	logger.Debug.Printf("Device ID %d", deviceAddress48)
+	log.Debug.Printf("Device ID %d", deviceAddress48)
 
 	// add the reading
 
@@ -614,19 +627,54 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 		return 0, fmt.Errorf("database error adding reading: %s", err.Error())
 	}
 
-	logger.Debug.Printf("Reading ID %d", readingId)
+	log.Debug.Printf("Reading ID %d", readingId)
 
 	return sleepCount, nil
 }
 
 //////////////////////////////////////////////////////////////////////
-// put a new reading
-// parameters:
+// common reading parameters:
 // vbat uint64			vbat in 100mV units (i.e. 843 = 8.43 volts)
 // distance uint64		distance in counter units (see resolution)
 // device uint64		device mac address in hex
 // flags uint64			flags for reference
 // rssi int64			WiFi strength in dBm
+
+func getReadingParams(r *http.Request, params httprouter.Params) (readingParams, []string) {
+
+	var err error
+
+	var p readingParams
+
+	var errors = make([]string, 0)
+
+	query := r.URL.Query()
+
+	if p.vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if p.distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if p.device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if p.flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if p.rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
+		errors = append(errors, err.Error())
+	}
+	return p, errors
+}
+
+//////////////////////////////////////////////////////////////////////
+// put a new reading v1 (for distance_sensor_v1)
+// extra parameter:
 // resolution int64		resolution of distance timer counter
 //
 // distance in mm is calculated as :
@@ -645,50 +693,20 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 // unscaled_distance = distance / 2 (2012.5) * speed_of_sound_in_mm_per_sec (346000) = 696325000
 // final_distance = unscaled_distance (696325000) / counter_scale (8000000) = 87.04mm, call it 87
 
-func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func putReading_v1(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
 	var err error
 
 	// parse the query string
 
-	var errors = make([]string, 0)
+	queryParams, errors := getReadingParams(r, params)
 
-	var vbat uint64
-	var distance uint64
-	var device uint64
-	var flags uint64
-	var rssi int64
 	var resolution int64 = 0
 
 	query := r.URL.Query()
 
-	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
+	if resolution, err = parseQueryParamSigned("resolution", 10, 32, query); err != nil {
 		errors = append(errors, err.Error())
-	}
-
-	if distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	// if resolution not specified, then distance is in mm
-
-	if len(query["resolution"]) != 0 {
-
-		if resolution, err = parseQueryParamSigned("resolution", 10, 32, query); err != nil {
-			errors = append(errors, err.Error())
-		}
 	}
 
 	if len(errors) != 0 {
@@ -696,21 +714,16 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 		return
 	}
 
-	distance_mm := int32(distance)
+	// counter counts at this many per second (eg 8000000)
 
-	if resolution != 0 {
+	time_scale := 48000000.0 / float32(resolution)
 
-		// counter counts at this many per second (eg 8000000)
+	const speed_of_sound_mm_per_sec = 346000.0
 
-		time_scale := 48000000.0 / float32(resolution)
-
-		const speed_of_sound_mm_per_sec = 346000.0
-
-		distance_mm = int32(float32(distance) / time_scale * speed_of_sound_mm_per_sec / 2.0)
-	}
+	distance_mm := int32(float32(queryParams.distance) / time_scale * speed_of_sound_mm_per_sec / 2.0)
 
 	var sleepCount int
-	sleepCount, err = insertReading(device, vbat, distance_mm, flags, rssi)
+	sleepCount, err = insertReading(queryParams.device, queryParams.vbat, distance_mm, queryParams.flags, queryParams.rssi)
 
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -720,55 +733,20 @@ func putReading(w http.ResponseWriter, r *http.Request, params httprouter.Params
 }
 
 //////////////////////////////////////////////////////////////////////
-// putReading2 for the newer sensor
+// put a new reading v2 for distance_sensor_v2
 // no resolution (it's already in mm)
-// sleep_count return is in seconds, not some dodgy other thing
+// sleep_count returned is in seconds, not some dodgy other thing
 
-func putReading2(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func putReading_v2(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-	var err error
-
-	// parse the query string
-
-	var errors = make([]string, 0)
-
-	var vbat uint64
-	var distance uint64
-	var device uint64
-	var flags uint64
-	var rssi int64
-
-	query := r.URL.Query()
-
-	if vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	if rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
-		errors = append(errors, err.Error())
-	}
-
-	// if resolution not specified, then distance is in mm
+	queryParams, errors := getReadingParams(r, params)
 
 	if len(errors) != 0 {
 		respondError(w, http.StatusBadRequest, errors...)
 		return
 	}
 
-	var sleepCountSeconds int
-	sleepCountSeconds, err = insertReading(device, vbat, int32(distance), flags, rssi)
+	sleepCountSeconds, err := insertReading(queryParams.device, (queryParams.vbat+5)/10, int32(queryParams.distance), queryParams.flags, queryParams.rssi)
 
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -782,7 +760,7 @@ func putReading2(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 func checkSaltLevels() {
 
-	logger.Info.Printf("Checking Salt Levels daily")
+	log.Info.Printf("Checking Salt Levels daily")
 
 	// open the database
 
@@ -790,7 +768,7 @@ func checkSaltLevels() {
 	var err error
 
 	if db, err = openDatabase(); err != nil {
-		logger.Error.Printf("Error opening database: %s", err.Error())
+		log.Error.Printf("Error opening database: %s", err.Error())
 		return
 	}
 	defer db.Close()
@@ -800,7 +778,7 @@ func checkSaltLevels() {
 	devices, _, err := queryDevices(db)
 
 	if err != nil {
-		logger.Error.Printf("Can't query devices!? (%s)", err.Error())
+		log.Error.Printf("Can't query devices!? (%s)", err.Error())
 		return
 	}
 
@@ -815,21 +793,21 @@ func checkSaltLevels() {
 
 		if deviceAddress48, err = strconv.ParseUint(device.Address, 16, 48); err != nil {
 
-			logger.Error.Printf("Device %s has bad address: %s", device.Address, err.Error())
+			log.Error.Printf("Device %s has bad address: %s", device.Address, err.Error())
 			continue
 		}
 
 		// get the most recent reading for this device
 
-		logger.Verbose.Printf("Notifications for device %s (%s) (id = %d)?", device.Address, device.Name, device.Id)
+		log.Verbose.Printf("Notifications for device %s (%s) (id = %d)?", device.Address, device.Name, device.Id)
 
 		if reading, _, err := queryReadings(time.Time{}, time.Now().Add(time.Hour*24), 1, deviceAddress48); err != nil {
 
-			logger.Error.Printf("Error querying readings for device %s : %s", device.Address, err.Error())
+			log.Error.Printf("Error querying readings for device %s : %s", device.Address, err.Error())
 
 		} else if reading.Rows == 0 {
 
-			logger.Info.Printf("No readings for device %s (%s)", device.Address, device.Name)
+			log.Info.Printf("No readings for device %s (%s)", device.Address, device.Name)
 
 		} else {
 
@@ -849,10 +827,10 @@ func checkSaltLevels() {
 
 				if err == sql.ErrNoRows {
 
-					logger.Info.Printf("No notifications for device %s", device.Address)
+					log.Info.Printf("No notifications for device %s", device.Address)
 					continue
 				}
-				logger.Error.Printf("Error getting notifications for %s: %s", device.Address, err.Error())
+				log.Error.Printf("Error getting notifications for %s: %s", device.Address, err.Error())
 				continue
 			}
 
@@ -869,7 +847,7 @@ func checkSaltLevels() {
 
 				if err = query.Scan(&distance_threshold, &vbat_threshold, &time_threshold, &email); err != nil {
 
-					logger.Error.Printf("Error reading notification data for device %s", device.Address)
+					log.Error.Printf("Error reading notification data for device %s", device.Address)
 					continue
 				}
 
@@ -902,13 +880,13 @@ func checkSaltLevels() {
 
 				if len(warnings) == 0 {
 
-					logger.Info.Printf("No warning for %s on %s(%s)", email, device.Name, device.Address)
+					log.Info.Printf("No warning for %s on %s(%s)", email, device.Name, device.Address)
 					continue
 				}
 
 				// send the warning email to this notification recipient
 
-				logger.Verbose.Printf("Sending alert email to %s for device %s (%s)", email, device.Name, device.Address)
+				log.Verbose.Printf("Sending alert email to %s for device %s (%s)", email, device.Name, device.Address)
 
 				emailData := emailWarnings{
 					Subject:  "Alert from the Water Softener",
@@ -942,7 +920,7 @@ func main() {
 	var logLevelName string
 
 	flag.StringVar(&credentialsFilename, "credentials", "", "Specify credentials filename (required)")
-	flag.StringVar(&logLevelName, "log_level", logger.LogLevelNames[logger.LogLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(logger.LogLevelNames[:], "|")))
+	flag.StringVar(&logLevelName, "log_level", log.LogLevelNames[log.LogLevel], fmt.Sprintf("Specify log level (%s)", strings.Join(log.LogLevelNames[:], "|")))
 	flag.Parse()
 
 	// check command line parameters, setup logging and database credentials
@@ -961,7 +939,7 @@ func main() {
 		}
 	}
 
-	if err := logger.Init(logLevelName); err != nil {
+	if err := log.Init(logLevelName); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -979,19 +957,19 @@ func main() {
 
 	// startup ok, here we go
 
-	logger.Info.Println()
-	logger.Info.Printf("########## SALT SENSOR SERVICE BEGINS ##########")
+	log.Info.Println()
+	log.Info.Printf("########## SALT SENSOR SERVICE BEGINS ##########")
 
-	logger.Verbose.Printf("Log level: %s", logger.LogLevelNames[logger.LogLevel])
-	logger.Verbose.Printf("Credentials file: %s", credentialsFilename)
+	log.Verbose.Printf("Log level: %s", log.LogLevelNames[log.LogLevel])
+	log.Verbose.Printf("Credentials file: %s", credentialsFilename)
 
 	// database config
 
-	logger.Verbose.Printf("Database is '%s'", databaseName)
-	logger.Verbose.Printf("Username is '%s'", credentials.Username)
+	log.Verbose.Printf("Database is '%s'", databaseName)
+	log.Verbose.Printf("Username is '%s'", credentials.Username)
 
-	logger.Verbose.Printf("SMTP Server is '%s'", credentials.SMTPServer)
-	logger.Verbose.Printf("SMTP Account is '%s'", credentials.SMTPAccount)
+	log.Verbose.Printf("SMTP Server is '%s'", credentials.SMTPServer)
+	log.Verbose.Printf("SMTP Account is '%s'", credentials.SMTPAccount)
 
 	dbDSNString = (&mysql.Config{
 		User:                 credentials.Username,
@@ -1010,32 +988,30 @@ func main() {
 
 	if alarmChannel, err = dailyalarm.Set(6, 0, checkSaltLevels); err != nil {
 
-		logger.Error.Printf("Error setting up daily alarm: %s", err.Error())
+		log.Error.Printf("Error setting up daily alarm: %s", err.Error())
 	}
-
-	// HTTP always available
 
 	httpRouter := makeRouter()
 
-	httpRouter.PUT("/reading", logged(putReading))   // PUT /reading only available via HTTP
-	httpRouter.PUT("/reading2", logged(putReading2)) // PUT /reading only available via HTTP
+	httpRouter.PUT("/reading", logged(putReading_v1))
+	httpRouter.PUT("/reading2", logged(putReading_v2))
 	httpRouter.GET("/readings", logged(getReadings))
 	httpRouter.GET("/devices", logged(getDevices))
 
-	logger.Verbose.Printf("HTTP server starting")
+	log.Verbose.Printf("HTTP server starting")
 
 	err = http.ListenAndServe(":5002", httpRouter)
 
 	if errors.Is(err, http.ErrServerClosed) {
-		logger.Verbose.Printf("HTTP server closed")
+		log.Verbose.Printf("HTTP server closed")
 
 	} else if err != nil {
-		logger.Error.Printf("Error starting HTTP server: %s", err.Error())
+		log.Error.Printf("Error starting HTTP server: %s", err.Error())
 	}
 
 	// quit the daily alarm
 
 	alarmChannel <- dailyalarm.AlarmQuit
 
-	logger.Info.Printf("---------- SALT SENSOR SERVICE ENDS ----------")
+	log.Info.Printf("---------- SALT SENSOR SERVICE ENDS ----------")
 }

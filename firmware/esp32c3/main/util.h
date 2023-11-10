@@ -16,13 +16,14 @@ extern "C" {
 
 //////////////////////////////////////////////////////////////////////
 
-#define ASSERT(x)                                                                                                     \
-    do {                                                                                                              \
-        if(!(x)) {                                                                                                    \
-            printf("\n\n**********\n\nASSERT '%s' failed\nLINE %d\nFILE %s\n\n**********\n", #x, __LINE__, __FILE__); \
-            fflush(stdout);                                                                                           \
-            abort();                                                                                                  \
-        }                                                                                                             \
+#define ASSERT(x)                                                                                                            \
+    do {                                                                                                                     \
+        if(!(x)) {                                                                                                           \
+            printf("\033[0;31m\n\n=====\n\nASSERT '%s' failed\nLINE %d\nFILE %s\n\n=====\n\033[0m", #x, __LINE__, __FILE__); \
+            fflush(stdout);                                                                                                  \
+            fsync(fileno(stdout));                                                                                           \
+            abort();                                                                                                         \
+        }                                                                                                                    \
     } while(false)
 
 //////////////////////////////////////////////////////////////////////
@@ -42,50 +43,66 @@ esp_err_t i2c_master_write_write_device(i2c_port_t i2c_num, uint8_t dev_addr, ui
     do {        \
     } while(0)
 
-#define LOG_TAG(x)
+#define LOG_CONTEXT(x)
 
-#define LOG_E(...) LOG_NOP
-#define LOG_W(...) LOG_NOP
-#define LOG_I(...) LOG_NOP
-#define LOG_V(...) LOG_NOP
-#define LOG_D(...) LOG_NOP
+#define LOG_ERROR(...) LOG_NOP
+#define LOG_WARN(...) LOG_NOP
+#define LOG_INFO(...) LOG_NOP
+#define LOG_VERBOSE(...) LOG_NOP
+#define LOG_DEBUG(...) LOG_NOP
 
-#define LOG_SET_LEVEL(channel, level) LOG_NOP
+#define LOG_SET_LEVEL(...) LOG_NOP
+
+#define LOG_BUFFER(...) LOG_NOP
+
+#define LOG_FLUSH(...) LOG_NOP
 
 #else
 
-#define LOG_TAG(x) static char const *__log_tag MAYBE_UNUSED = x
+#define LOG_CONTEXT(x) static char const *__log_tag MAYBE_UNUSED = x
 
-#define LOG_E(...) ESP_LOGE(__log_tag, __VA_ARGS__)
-#define LOG_W(...) ESP_LOGW(__log_tag, __VA_ARGS__)
-#define LOG_I(...) ESP_LOGI(__log_tag, __VA_ARGS__)
-#define LOG_V(...) ESP_LOGV(__log_tag, __VA_ARGS__)
-#define LOG_D(...) ESP_LOGD(__log_tag, __VA_ARGS__)
+#define LOG_ERROR(...) ESP_LOGE(__log_tag, __VA_ARGS__)
+#define LOG_WARN(...) ESP_LOGW(__log_tag, __VA_ARGS__)
+#define LOG_INFO(...) ESP_LOGI(__log_tag, __VA_ARGS__)
+#define LOG_VERBOSE(...) ESP_LOGV(__log_tag, __VA_ARGS__)
+#define LOG_DEBUG(...) ESP_LOGD(__log_tag, __VA_ARGS__)
 
 #define LOG_SET_LEVEL(channel, level) esp_log_level_set(channel, level)
+
+#define LOG_BUFFER(level, data, len)                 \
+    do {                                             \
+        if(LOG_LOCAL_LEVEL >= level)                 \
+            log_buffer(__log_tag, data, len, level); \
+    } while(0)
+
+#define LOG_FLUSH(...)         \
+    do {                       \
+        fflush(stdout);        \
+        fsync(fileno(stdout)); \
+    } while(0)
 
 #endif
 
 //////////////////////////////////////////////////////////////////////
 
-#define ESP_RET(x)                                                                    \
-    do {                                                                              \
-        esp_err_t __err = (x);                                                        \
-        if(__err != ESP_OK) {                                                         \
-            LOG_E("%s failed: 0x%08x (%s)", #x, (uint)__err, esp_err_to_name(__err)); \
-            return __err;                                                             \
-        }                                                                             \
-    } while(false)
+#define ESP_RET(x)                                                                        \
+    do {                                                                                  \
+        esp_err_t __err = (x);                                                            \
+        if(__err != ESP_OK) {                                                             \
+            LOG_ERROR("%s failed: 0x%08x (%s)", #x, (uint)__err, esp_err_to_name(__err)); \
+            return __err;                                                                 \
+        }                                                                                 \
+    } while(0)
 
 //////////////////////////////////////////////////////////////////////
 
-#define ESP_LOG(x)                                                                    \
-    do {                                                                              \
-        esp_err_t __err = (x);                                                        \
-        if(__err != ESP_OK) {                                                         \
-            LOG_E("%s failed: 0x%08x (%s)", #x, (uint)__err, esp_err_to_name(__err)); \
-        }                                                                             \
-    } while(false)
+#define ESP_LOG(x)                                                                        \
+    do {                                                                                  \
+        esp_err_t __err = (x);                                                            \
+        if(__err != ESP_OK) {                                                             \
+            LOG_ERROR("%s failed: 0x%08x (%s)", #x, (uint)__err, esp_err_to_name(__err)); \
+        }                                                                                 \
+    } while(0)
 
 //////////////////////////////////////////////////////////////////////
 

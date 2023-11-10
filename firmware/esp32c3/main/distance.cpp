@@ -22,7 +22,7 @@
 #include "util.h"
 #include "distance.h"
 
-LOG_TAG("distance");
+LOG_CONTEXT("distance");
 
 //////////////////////////////////////////////////////////////////////
 
@@ -64,7 +64,7 @@ int get_distance(int16_t *distance)
 
     uint8_t status = vl53l5cx_is_alive(&vl53, &is_alive);
     if(status != 0 || is_alive == 0) {
-        LOG_E("IS_ALIVE = %d", is_alive);
+        LOG_ERROR("IS_ALIVE = %d", is_alive);
         return DISTANCE_ERR_SENSOR_MISSING;
     }
 
@@ -88,80 +88,66 @@ int get_distance(int16_t *distance)
         return DISTANCE_ERR_START_RANGING;
     }
 
-    // try and get a decent reading this many times
+    // wait up to ~200ms for a reading to become available
 
-    int const MAX_DISTANCE_TRIES = 5;
+    for(int t = 0; t < 20; ++t) {
 
-    for(int i = 0; i < MAX_DISTANCE_TRIES; ++i) {
-
-        // wait up to 200ms for a reading to become available
+        // distance reading available?
 
         uint8_t data_ready;
 
-        for(int t = 0; t < 20; ++t) {
-
-            // distance reading available?
-
-            if(vl53l5cx_check_data_ready(&vl53, &data_ready) != 0) {
-                return DISTANCE_ERR_DATA_READY;
-            }
-
-            // if so
-
-            if(data_ready) {
-
-                // get it
-
-                if(vl53l5cx_get_ranging_data(&vl53, &vl53_results) != 0) {
-                    return DISTANCE_ERR_GET_DATA;
-                }
-
-                LOG_I("Distance sensor temp %d", vl53_results.silicon_temp_degc);
-
-                int dist4[4] MAYBE_UNUSED;
-                int di = 0;
-
-                int total = 0;
-                int imax = 0;
-                int imin = 0x7fff;
-                for(int y = 3; y <= 4; ++y) {
-                    for(int x = 3; x <= 4; ++x) {
-                        int r = vl53_results.distance_mm[x + y * 8];
-                        dist4[di++] = r;
-                        imin = min(imin, r);
-                        imax = max(imax, r);
-                        total += r;
-                    }
-                }
-
-                int16_t dist = static_cast<int16_t>((total - (imin + imax)) / 2);
-
-                LOG_V("% 4d % 4d % 4d % 4d", dist4[0], dist4[1], dist4[2], dist4[3]);
-
-                // if we got a good reading in some sensible range, return it
-
-                if(dist > 0 && dist < 2000) {
-                    *distance = dist;
-                    return DISTANCE_SUCCESS;
-                }
-
-                // we got a reading but not in range, try again
-
-                break;
-            }
-
-            // no data, wait for 10ms
-            vTaskDelay(pdMS_TO_TICKS(10));
+        if(vl53l5cx_check_data_ready(&vl53, &data_ready) != 0) {
+            return DISTANCE_ERR_DATA_READY;
         }
 
-        // distance data not available after 200ms, tough luck
+        // if so
 
-        if(!data_ready) {
-            return DISTANCE_ERR_TIMEOUT;
+        if(data_ready) {
+
+            // get it
+
+            if(vl53l5cx_get_ranging_data(&vl53, &vl53_results) != 0) {
+                return DISTANCE_ERR_GET_DATA;
+            }
+
+            LOG_INFO("Distance sensor temp %d", vl53_results.silicon_temp_degc);
+
+            int dist4[4] MAYBE_UNUSED;
+            int di = 0;
+
+            int total = 0;
+            int imax = 0;
+            int imin = 0x7fff;
+            for(int y = 3; y <= 4; ++y) {
+                for(int x = 3; x <= 4; ++x) {
+                    int r = vl53_results.distance_mm[x + y * 8];
+                    dist4[di++] = r;
+                    imin = min(imin, r);
+                    imax = max(imax, r);
+                    total += r;
+                }
+            }
+
+            int16_t dist = static_cast<int16_t>((total - (imin + imax)) / 2);
+
+            LOG_VERBOSE("% 4d % 4d % 4d % 4d", dist4[0], dist4[1], dist4[2], dist4[3]);
+
+            // if we got a reading in some sensible range, return it
+
+            if(dist > 0 && dist < 2000) {
+                *distance = dist;
+                return DISTANCE_SUCCESS;
+            }
+
+            // we got a reading but not in range
+            return DISTANCE_ERR_BAD_DISTANCE;
         }
+
+        // no data, wait for 10ms
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // we got a reading but it's out of range, tough luck
+    // distance data not available after 200ms, tough luck
 
-    return DISTANCE_ERR_BAD_DISTANCE;
+    return DISTANCE_ERR_TIMEOUT;
 }

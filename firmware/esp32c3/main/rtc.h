@@ -67,7 +67,6 @@ esp_err_t rtc_cleanup();
 esp_err_t rtc_get_clock(rtc_clock_data_t *data);
 esp_err_t rtc_set_clock(rtc_clock_data_t const *data);
 
-esp_err_t rtc_set_alarm(rtc_clock_data_t const *data);
+esp_err_t rtc_set_alarm(int32 seconds, rtc_clock_data_t &data);
 
-int rtc_get_clock_seconds(rtc_clock_data_t const &data);
-void rtc_set_alarm_seconds(int32 seconds, rtc_clock_data_t &data);
+int32 rtc_seconds_from_clock_data(rtc_clock_data_t const &data);

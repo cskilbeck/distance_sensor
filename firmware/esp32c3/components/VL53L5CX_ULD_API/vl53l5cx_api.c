@@ -17,7 +17,7 @@
 #include <string.h>
 #include "util.h"
 
-LOG_TAG("VL53");
+LOG_CONTEXT("VL53");
 
 /**
  * @brief Inner function, not available outside this file. This function is used
@@ -36,7 +36,7 @@ static uint8_t _vl53l5cx_poll_for_answer(VL53L5CX_Configuration *p_dev, uint8_t 
         got = p_dev->temp_buffer[pos] & mask;
 
         if(timeout < 5 && got != expected_value) {
-            LOG_E("got = %02x, expected %02x, mask = %02x, size = %d, so.... %d", got, expected_value, mask, size, got != expected_value);
+            LOG_ERROR("got = %02x, expected %02x, mask = %02x, size = %d, so.... %d", got, expected_value, mask, size, got != expected_value);
         }
 
 
@@ -280,23 +280,23 @@ uint8_t vl53l5cx_init(VL53L5CX_Configuration *p_dev)
     status |= WrByte(&(p_dev->platform), 0x20, 0x07);
     status |= WrByte(&(p_dev->platform), 0x20, 0x06);
 
-    LOG_I("WRITE FIRMWARE...1");
+    LOG_INFO("WRITE FIRMWARE...1");
 
     /* Download FW into VL53L5 */
     status |= WrByte(&(p_dev->platform), 0x7fff, 0x09);
     status |= WrMulti(&(p_dev->platform), 0, (uint8_t *)&VL53L5CX_FIRMWARE[0], 0x8000);
-    LOG_I("WRITE FIRMWARE...2");
+    LOG_INFO("WRITE FIRMWARE...2");
 
     status |= WrByte(&(p_dev->platform), 0x7fff, 0x0a);
     status |= WrMulti(&(p_dev->platform), 0, (uint8_t *)&VL53L5CX_FIRMWARE[0x8000], 0x8000);
-    LOG_I("WRITE FIRMWARE...3");
+    LOG_INFO("WRITE FIRMWARE...3");
 
     status |= WrByte(&(p_dev->platform), 0x7fff, 0x0b);
     status |= WrMulti(&(p_dev->platform), 0, (uint8_t *)&VL53L5CX_FIRMWARE[0x10000], 0x5000);
 
     status |= WrByte(&(p_dev->platform), 0x7fff, 0x01);
 
-    LOG_I("FIRMWARE CHECK...");
+    LOG_INFO("FIRMWARE CHECK...");
 
     /* Check if FW correctly downloaded */
     status |= WrByte(&(p_dev->platform), 0x7fff, 0x02);

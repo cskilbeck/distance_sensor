@@ -40,94 +40,67 @@
 #include "http_client.h"
 #include "hardware.h"
 
-LOG_TAG("main");
+LOG_CONTEXT("main");
 
 //////////////////////////////////////////////////////////////////////
 
 namespace
 {
-    // wait this long for wifi to connect
-
-    constexpr int wifi_timeout_ms = 30000;
-
-    // led flash time when waiting for wifi
-
-    constexpr int wifi_led_flash_time_ms = 20;
-
-    // led flash rate when waiting for wifi
-
-    constexpr int wifi_led_flash_rate_ms = 2000;
-
-    // hold button for this long to factory reset
-
-    constexpr int factory_reset_button_time_ms = 5000;
-
-    // flash led for this long when button held
-
-    constexpr int factory_reset_led_flash_time_ms = 50;
-
-    // flash led at this rate when button held
-
-    constexpr int factory_reset_led_flash_rate_ms = 500;
-
-    //////////////////////////////////////////////////////////////////////
-
-    char const *server_host = "192.168.4.52";
-    // char const *server_host = "vibue.com";
-
-    char const *server_port = "5002";
-    char const *server_path = "reading2";
-
-    constexpr int http_retries = 3;
-
-    //////////////////////////////////////////////////////////////////////
-    // how long to sleep for, default 6 hours, but get it from the server when a reading is uploaded
-
-    int32 constexpr default_sleep_seconds = 60 * 60 * 6;
-
-    int32 constexpr max_sleep_seconds = 60 * 60 * 12;
-    int32 constexpr min_sleep_seconds = 30;
-
-    // what the server says to sleep for
-
-    int32 server_sleep_seconds;
-
-    //////////////////////////////////////////////////////////////////////
-    // wifi admin
-
-    EventGroupHandle_t wifi_event_bits;
-
-    uint32 constexpr main_wifi_connected = BIT0;
-    uint32 constexpr main_wifi_disconnected = BIT1;
-
-    uint32 constexpr main_wifi_bit_mask = main_wifi_connected | main_wifi_disconnected;
-
-    // default mac address is used as unique device id
-
-    char mac_address[13];
-
-    //////////////////////////////////////////////////////////////////////
-
-    void wifi_connected_callback()
+    namespace config
     {
-        LOG_I("WIFI CONNECTED, RSSI = %d", wifi_get_rssi());
-        xEventGroupSetBits(wifi_event_bits, main_wifi_connected);
-    }
+        // allow factory reset on long button press
 
-    //////////////////////////////////////////////////////////////////////
+        constexpr bool factory_reset_enabled = true;
 
-    void wifi_disconnected_callback()
-    {
-        LOG_I("WIFI DISCONNECTED!");
-        xEventGroupSetBits(wifi_event_bits, main_wifi_disconnected);
-    }
+        // wait this long for wifi to connect
+
+        constexpr int wifi_timeout_ms = 30000;
+
+        // led flash time when waiting for wifi
+
+        constexpr int wifi_led_flash_time_ms = 20;
+
+        // led flash rate when waiting for wifi
+
+        constexpr int wifi_led_flash_rate_ms = 2000;
+
+        // hold button for this long to factory reset
+
+        constexpr int factory_reset_button_time_ms = 5000;
+
+        // flash led for this long when button held
+
+        constexpr int factory_reset_led_flash_time_ms = 50;
+
+        // flash led at this rate when button held
+
+        constexpr int factory_reset_led_flash_rate_ms = 500;
+
+        // send readings to this server/port/path
+
+        // constexpr char const *server_host = "192.168.4.52";
+        char const *server_host = "vibue.com";
+        constexpr char const *server_port = "5002";
+        constexpr char const *server_path = "reading2";
+
+        // retry http this many times (sometimes needs two, never seen it succeed after that)
+
+        constexpr int http_retries = 3;
+
+        // how long to sleep for, default 6 hours, but get it from the server when a reading is uploaded
+
+        constexpr int32 default_sleep_seconds = 60 * 60 * 6;
+        constexpr int32 max_sleep_seconds = 60 * 60 * 12;
+        constexpr int32 min_sleep_seconds = 30;
+
+    }    // namespace config
 
     //////////////////////////////////////////////////////////////////////
     // power admin
 
     void power_on()
     {
-        LOG_W("Power ON");
+        LOG_WARN("Power ON");
         gpio_set_level(GPIO_POWER_ENABLE, 1);
     }
 
@@ -135,10 +108,9 @@ namespace
 
     void power_off()
     {
-        LOG_W("Power OFF");
+        LOG_WARN("Power OFF");
 
-        fflush(stdout);
-        fsync(fileno(stdout));
+        LOG_FLUSH();
 
         gpio_set_level(GPIO_POWER_ENABLE, 0);
     }
@@ -206,7 +178,7 @@ namespace
 
     esp_err_t get_vbat(int *mv)
     {
-        LOG_TAG("vbat");
+        LOG_CONTEXT("vbat");
 
         // switch on VBAT_SNS
 
@@ -268,9 +240,9 @@ namespace
         int voltage;
         ESP_RET(adc_cali_raw_to_voltage(cal_handle, adc_raw, &voltage));
 
-        LOG_I("ADC UNIT %d [%d] = %d (%d mV)", ADC_VBSNS_UNIT, ADC_VBSNS_CHANNEL, adc_raw, voltage);
+        LOG_INFO("ADC UNIT %d [%d] = %d (%d mV)", ADC_VBSNS_UNIT, ADC_VBSNS_CHANNEL, adc_raw, voltage);
 
-        // undo the resistor divider to get actual vbat
+        // undo the 50% resistor divider to get actual vbat
 
         *mv = voltage * 2;
 
@@ -280,47 +252,47 @@ namespace
     //////////////////////////////////////////////////////////////////////
     // get sleep_count from http response
 
-    esp_err_t read_settings(char const *response_buffer)
+    esp_err_t read_settings(char const *response_buffer, int32 *server_sleep_seconds)
     {
-        LOG_TAG("read_settings");
+        LOG_CONTEXT("read_settings");
 
         cJSON *json = cJSON_Parse(response_buffer);
 
-        if(json == nullptr) {
-            LOG_E("Failed to parse response");
+        if(json == null) {
+            LOG_ERROR("Failed to parse response");
             return ESP_ERR_INVALID_RESPONSE;
         }
         DEFER(cJSON_Delete(json));
 
         cJSON const *settings = cJSON_GetObjectItem(json, "settings");
 
-        if(settings == nullptr) {
-            LOG_E("Can't find settings object");
+        if(settings == null) {
+            LOG_ERROR("Can't find settings object");
             return ESP_ERR_INVALID_RESPONSE;
         }
 
         cJSON const *sleep_count_obj = cJSON_GetObjectItem(settings, "sleep_count");
 
-        if(sleep_count_obj == nullptr) {
-            LOG_E("Can't find sleep_count object");
+        if(sleep_count_obj == null) {
+            LOG_ERROR("Can't find sleep_count object");
             return ESP_ERR_INVALID_RESPONSE;
         }
 
         if(sleep_count_obj->type != cJSON_Number) {
-            LOG_E("sleep_count is not a number");
+            LOG_ERROR("sleep_count is not a number");
             return ESP_ERR_INVALID_RESPONSE;
         }
 
         int sleep_count_value = sleep_count_obj->valueint;
 
-        if(sleep_count_value > max_sleep_seconds || sleep_count_value < min_sleep_seconds) {
-            LOG_E("sleep_count %d out of range (%ld..%ld)", sleep_count_value, min_sleep_seconds, max_sleep_seconds);
+        if(sleep_count_value > config::max_sleep_seconds || sleep_count_value < config::min_sleep_seconds) {
+            LOG_WARN("sleep_count %d out of range (%ld..%ld)", sleep_count_value, config::min_sleep_seconds, config::max_sleep_seconds);
             return ESP_ERR_INVALID_RESPONSE;
         }
 
-        LOG_V("server sleep seconds: %d", sleep_count_value);
+        LOG_INFO("server sleep seconds: %d", sleep_count_value);
 
-        server_sleep_seconds = sleep_count_value;
+        *server_sleep_seconds = sleep_count_value;
 
         return ESP_OK;
     }
@@ -328,14 +300,24 @@ namespace
     //////////////////////////////////////////////////////////////////////
     // send a reading to the server and process the response
 
-    esp_err_t send_reading(int16 distance_mm, int vbat_mv, int8 wifi_rssi)
+    esp_err_t send_reading(int16 distance_mm, int vbat_mv, int8 wifi_rssi, int32 *server_sleep_seconds)
     {
-        for(int tries = 0; tries < http_retries; ++tries) {
+        // default mac address is used as unique device id
+
+        uint8 mac[6];
+        esp_efuse_mac_get_default(mac);
+
+        char mac_address[13];
+        sprintf(mac_address, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+        LOG_VERBOSE("MAC ADDRESS: %s", mac_address);
+
+        for(int tries = 0; tries < config::http_retries; ++tries) {
 
             char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d";
 
             static char url[256];
-            sprintf(url, url_format, server_host, server_port, server_path, vbat_mv, distance_mm, 0, mac_address, wifi_rssi);
+            sprintf(url, url_format, config::server_host, config::server_port, config::server_path, vbat_mv, distance_mm, 0, mac_address, wifi_rssi);
 
             static char response_buffer[256];
 
@@ -346,7 +328,8 @@ namespace
             if(http_request(HTTP_METHOD_PUT, url, &response_code, response_buffer, &response_size) == ESP_OK) {
 
                 if(response_code < 300) {
-                    read_settings(response_buffer);
+
+                    return read_settings(response_buffer, server_sleep_seconds);
                 }
                 return ESP_OK;
             }
@@ -368,7 +351,7 @@ extern "C" void app_main(void)
 
     esp_log_level_set("*", ESP_LOG_INFO);
 
-    LOG_E("===== MAIN =====");
+    LOG_ERROR("===== MAIN =====");
 
     LOG_SET_LEVEL("gpio", ESP_LOG_WARN);
     LOG_SET_LEVEL("pp", ESP_LOG_WARN);
@@ -377,64 +360,59 @@ extern "C" void app_main(void)
     LOG_SET_LEVEL("wifi", ESP_LOG_WARN);
     LOG_SET_LEVEL("wifi_init", ESP_LOG_WARN);
 
+    // init power (and switch it on)
+
     power_init();
-
-    led_init();
-
-    // get mac address
-
-    uint8 mac[6];
-    esp_efuse_mac_get_default(mac);
-    sprintf(mac_address, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    LOG_V("MAC ADDRESS: %s", mac_address);
 
     // get vbat
 
     int vbat_mv = 0;
     ESP_LOG(get_vbat(&vbat_mv));
 
+    LOG_INFO("VBAT: %dmV", vbat_mv);
+
     // get the RTC clock
 
     rtc_clock_data_t clock_data;
+    memset(&clock_data, 0, sizeof(clock_data));
     rtc_get_clock(&clock_data);
+
+    LOG_INFO("Time %02x:%02x.%02x", clock_data.hours_bcd, clock_data.minutes_bcd, clock_data.seconds_bcd & 0x7f);
+
+    // init the led (and make sure it's off)
+
+    led_init();
 
     // start the wifi connecting
 
-    esp_err_t ret;
-
-    ret = nvs_flash_init();
+    esp_err_t ret = nvs_flash_init();
     if(ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_LOG(nvs_flash_erase());
         ret = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(ret);
-
-    wifi_event_bits = xEventGroupCreate();
-
-    on_wifi_connected = wifi_connected_callback;
-    on_wifi_disconnected = wifi_disconnected_callback;
+    ESP_LOG(ret);
 
     wifi_init();
 
     // read sleep_seconds from NVS
 
-    int32 sleep_seconds = 0;
+    int32 sleep_seconds = config::default_sleep_seconds;
 
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
     if(err != ESP_OK) {
-        LOG_E("Error opening NVS\\storage: %s", esp_err_to_name(err));
+        LOG_ERROR("Error opening NVS\\storage: %s", esp_err_to_name(err));
     } else {
         err = nvs_get_i32(nvs_handle, "sleep_seconds", &sleep_seconds);
         switch(err) {
         case ESP_OK:
-            LOG_V("Got NVS:sleep_seconds: %ld", sleep_seconds);
+            LOG_VERBOSE("Got NVS:sleep_seconds: %ld", sleep_seconds);
             break;
         case ESP_ERR_NVS_NOT_FOUND:
-            LOG_I("sleep_seconds not initialized yet, defaulting to %ld seconds", default_sleep_seconds);
+            LOG_INFO("sleep_seconds not initialized yet, defaulting to %ld seconds", config::default_sleep_seconds);
             break;
         default:
-            LOG_E("Error (%s) reading NVS:sleep_seconds", esp_err_to_name(err));
+            LOG_ERROR("Error (%s) reading NVS:sleep_seconds", esp_err_to_name(err));
         }
     }
 
@@ -446,33 +424,37 @@ extern "C" void app_main(void)
 
     if(distance_status == DISTANCE_SUCCESS) {
 
-        LOG_I("DISTANCE: %d", distance);
+        LOG_INFO("DISTANCE: %d", distance);
 
     } else {
 
-        LOG_E("DISTANCE ERROR: %d", distance_status);
+        LOG_ERROR("DISTANCE ERROR: %d", distance_status);
     }
 
-    // flash LED while waiting for wifi
+    // flash LED while waiting for wifi to connect
 
     static StaticTimer_t led_timer;
 
-    TimerHandle_t led_off_timer = xTimerCreateStatic("led_off", pdMS_TO_TICKS(wifi_led_flash_time_ms), pdFALSE, nullptr, led_off_callback, &led_timer);
+    TimerHandle_t led_flash_timer = xTimerCreateStatic("led_off", pdMS_TO_TICKS(config::wifi_led_flash_time_ms), pdFALSE, null, led_off_callback, &led_timer);
 
     TickType_t now = xTaskGetTickCount();
     TickType_t elapsed = 0;
 
-    do {
+    while(elapsed < pdMS_TO_TICKS(config::wifi_timeout_ms)) {
 
-        uint32_t events = xEventGroupWaitBits(wifi_event_bits, main_wifi_bit_mask, true, false, pdMS_TO_TICKS(wifi_led_flash_rate_ms));
+        LOG_INFO("Wait for wifi %lu", pdTICKS_TO_MS(pdMS_TO_TICKS(config::wifi_timeout_ms) - elapsed));
 
-        if((events & main_wifi_connected) != 0) {
+        uint32_t events = wifi_wait_for_event(pdMS_TO_TICKS(config::wifi_led_flash_rate_ms));
 
-            // wifi connected, send the reading
+        if((events & wifi_event_connected) != 0) {
 
-            LOG_I("Wifi connected");
+            // wifi connected, send the reading to the server
 
-            send_reading(distance, vbat_mv, wifi_get_rssi());
+            LOG_INFO("Wifi connected");
+
+            int32 server_sleep_seconds = config::default_sleep_seconds;
+
+            ESP_LOG(send_reading(distance, vbat_mv, wifi_get_rssi(), &server_sleep_seconds));
 
             // if we got a new value for sleep_seconds, update it in NVS
 
@@ -480,34 +462,23 @@ extern "C" void app_main(void)
 
                 sleep_seconds = server_sleep_seconds;
 
-                LOG_I("saving new sleep_seconds (%ld) to NVS", sleep_seconds);
+                LOG_INFO("saving new sleep_seconds (%ld) to NVS", sleep_seconds);
 
                 ESP_LOG(nvs_set_i32(nvs_handle, "sleep_seconds", sleep_seconds));
                 ESP_LOG(nvs_commit(nvs_handle));
             }
 
-            // setup alarm
+            // setup the alarm, must sleep for at least 30 seconds
 
-            if(sleep_seconds < 30) {
-                sleep_seconds = 30;
-            }
+            sleep_seconds = max(sleep_seconds, 30l);
 
-            int current_seconds = rtc_get_clock_seconds(clock_data);
+            // get seconds elapsed today from initial clock reading
 
-            rtc_set_alarm_seconds(current_seconds + sleep_seconds, clock_data);
+            int32 elapsed_seconds = rtc_seconds_from_clock_data(clock_data);
 
-            LOG_V("CLK: %02x:%02x.%02x, ALARM: %02x:%02x.%02x",
-                  clock_data.hours_bcd,
-                  clock_data.minutes_bcd,
-                  clock_data.seconds_bcd,
-                  clock_data.hours_alarm_bcd,
-                  clock_data.minutes_alarm_bcd,
-                  clock_data.seconds_alarm_bcd);
+            // set the alarm
 
-            clock_data.control2 = RTC_CTL2_ALARM_IRQ_ENABLE;
-            clock_data.date_alarm_bcd = 0x80;
-            clock_data.weekday_alarm_bcd = 0x80;
-            rtc_set_alarm(&clock_data);
+            rtc_set_alarm(elapsed_seconds + sleep_seconds, clock_data);
 
             // we're done, go to power off or factory reset
 
@@ -519,14 +490,10 @@ extern "C" void app_main(void)
         if(events == 0) {
 
             led_on();
-            xTimerStart(led_off_timer, 0);
+            xTimerStart(led_flash_timer, 0);
         }
-
         elapsed = xTaskGetTickCount() - now;
-
-        LOG_I("Wait for wifi (%lu/%lu)", elapsed, pdMS_TO_TICKS(wifi_timeout_ms));
-
-    } while(elapsed < pdMS_TO_TICKS(wifi_timeout_ms));
+    }
 
     // try to power down everything except the RTC (including the ESP running this code...!)
 
@@ -536,29 +503,29 @@ extern "C" void app_main(void)
     // So flash the led and if they hold it down for >N seconds, factory reset.
     // If they release the button during this time, it just powers off.
 
-    LOG_I(">>> FACTORY RESET? <<<");
+    LOG_WARN(">>> FACTORY RESET? <<<");
 
     now = xTaskGetTickCount();
 
     do {
 
         led_on();
-        sleep(factory_reset_led_flash_time_ms);
+        sleep(config::factory_reset_led_flash_time_ms);
 
         led_off();
-        sleep(factory_reset_led_flash_rate_ms - factory_reset_led_flash_time_ms);
+        sleep(config::factory_reset_led_flash_rate_ms - config::factory_reset_led_flash_time_ms);
 
         elapsed = xTaskGetTickCount() - now;
 
-        LOG_I("Factory reset maybe (%lu/%d)", elapsed, factory_reset_button_time_ms);
+        LOG_INFO("Factory reset maybe (%lu/%d)", pdTICKS_TO_MS(elapsed), config::factory_reset_button_time_ms);
 
-    } while(elapsed < pdMS_TO_TICKS(factory_reset_button_time_ms));
+    } while(elapsed < pdMS_TO_TICKS(config::factory_reset_button_time_ms));
 
     // power back on so factory reset completes even if they release the button at the wrong moment
 
     power_on();
 
-    LOG_I("********** FACTORY RESET! **********");
+    LOG_WARN("********** FACTORY RESET! **********");
 
     // flash LED rapidly for one second to let them know it's factory resetting
 
@@ -569,7 +536,14 @@ extern "C" void app_main(void)
         sleep(80);
     }
 
-    wifi_factory_reset();
+    if(config::factory_reset_enabled) {
+        wifi_factory_reset();
+    } else {
+        LOG_WARN("Factory reset disabled, just rebooting");
+    }
 
-    // wifi_factory_reset() reboots the ESP so we should never get here
+    // must reboot after factory reset, can't seem to reinit the wifi properly...
+
+    LOG_FLUSH();
+    esp_restart();
 }
