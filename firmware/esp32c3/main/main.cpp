@@ -48,6 +48,11 @@ namespace
 {
     namespace config
     {
+        // global logging level should be NONE if no serial attached
+
+        constexpr esp_log_level_t global_log_level = ESP_LOG_INFO;
+        // constexpr esp_log_level_t global_log_level = ESP_LOG_NONE;
+
         // allow factory reset on long button press
 
         constexpr bool factory_reset_enabled = true;
@@ -349,16 +354,9 @@ extern "C" void app_main(void)
     REG_CLR_BIT(RTC_CNTL_FIB_SEL_REG, RTC_CNTL_FIB_BOD_RST);
     REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ANA_RST_EN);
 
-    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("*", global_log_level);
 
     LOG_ERROR("===== MAIN =====");
-
-    LOG_SET_LEVEL("gpio", ESP_LOG_WARN);
-    LOG_SET_LEVEL("pp", ESP_LOG_WARN);
-    LOG_SET_LEVEL("phy_init", ESP_LOG_WARN);
-    LOG_SET_LEVEL("net80211", ESP_LOG_WARN);
-    LOG_SET_LEVEL("wifi", ESP_LOG_WARN);
-    LOG_SET_LEVEL("wifi_init", ESP_LOG_WARN);
 
     // init power (and switch it on)
 
@@ -371,7 +369,7 @@ extern "C" void app_main(void)
 
     LOG_INFO("VBAT: %dmV", vbat_mv);
 
-    // get the RTC clock
+    // get the RTC clock. We __should__ still be well within the first second since the alarm went off...
 
     rtc_clock_data_t clock_data;
     memset(&clock_data, 0, sizeof(clock_data));
