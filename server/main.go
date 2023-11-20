@@ -39,7 +39,7 @@ type sensorSettings struct {
 // this is all v2 needs
 
 type readingParams struct {
-	vbat     uint64 // vbat_mv
+	vbat     uint64 // vbat in 0.01V units (e.g. 395 = 3.95V)
 	distance uint64 // distance in mm (v2) or... 'units' (v1)
 	device   uint64 // 48 bit mac address of the device sending the reading
 	flags    uint64 // flags (only v1)
@@ -70,6 +70,13 @@ type putReadingResponse struct {
 }
 
 //////////////////////////////////////////////////////////////////////
+// Empty OK response
+
+type okResponse struct {
+	Ok string `json:"ok"`
+}
+
+//////////////////////////////////////////////////////////////////////
 // HTTPS GET /readings response
 
 type getReadingsResponse struct {
@@ -88,11 +95,18 @@ type getDevicesResponse struct {
 }
 
 //////////////////////////////////////////////////////////////////////
+
+type getDeviceCountResponse struct {
+	DeviceCount uint64 `json:"device_count"` // # of devices
+}
+
+//////////////////////////////////////////////////////////////////////
 // Credentials for database, smtp
 
 type global_credentials struct {
-	Username     string `json:"username"`
-	Password     string `json:"password"`
+	DBUsername   string `json:"db_username"`
+	DBPassword   string `json:"db_password"`
+	DBDatabase   string `json:"database"`
 	SMTPServer   string `json:"smtp_server"`
 	SMTPAccount  string `json:"smtp_account"`
 	SMTPPassword string `json:"smtp_password"`
@@ -104,12 +118,15 @@ type global_credentials struct {
 type emailWarnings struct {
 	Subject  string
 	Header   string
+	From     string
+	FromLink string
 	Warnings []string
 	Footer   string
 }
 
 const emailTemplate string = `
 	<h3 style="color: #c04000;">{{.Header}}</h3>
+	<h4>From Salt Sensor <a href={{.FromLink}}>{{.From}}</a></h4>
 	<ul>
 		{{range .Warnings}}
 			<li>{{.}}</li>
@@ -122,10 +139,6 @@ const emailTemplate string = `
 // DB admin
 
 var credentials global_credentials
-
-const databaseName = "salt_sensor_test"
-
-// const databaseName = "salt_sensor"
 
 var dbDSNString string
 
@@ -168,10 +181,16 @@ func sendWarningEmail(data emailWarnings, recipients ...string) error {
 		return err
 	}
 
-	if err = emailsender.SendEmail(credentials.SMTPServer, 587,
-		credentials.SMTPAccount, credentials.SMTPPassword,
-		"Water Softener", data.Subject, html.String(),
-		"text/html", recipients...); err != nil {
+	if err = emailsender.SendEmail(
+		credentials.SMTPServer,
+		587,
+		credentials.SMTPAccount,
+		credentials.SMTPPassword,
+		"Water Softener",
+		data.Subject,
+		html.String(),
+		"text/html",
+		recipients...); err != nil {
 
 		log.Error.Printf("Error sending email: %s", err.Error())
 	}
@@ -223,6 +242,13 @@ func sendResponse[T any](w http.ResponseWriter, status int, response *T) {
 
 		log.Error.Printf("Can't write response: %s", err.Error())
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func respondOK[T any](w http.ResponseWriter, response *T) {
+
+	sendResponse(w, http.StatusOK, response)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -439,6 +465,35 @@ func queryReadings(from, to time.Time, count uint64, device uint64) (response ge
 }
 
 //////////////////////////////////////////////////////////////////////
+
+func doWarningEmail(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	checkSaltLevels()
+
+	respondOK(w, &okResponse{Ok: "OK"})
+}
+
+//////////////////////////////////////////////////////////////////////
+
+func getDeviceCount(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	var db *sql.DB
+	var err error
+
+	if db, err = openDatabase(); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Error opening database: %s", err.Error()))
+	}
+	defer db.Close()
+
+	var deviceCount uint64
+
+	if err = db.QueryRow(`SELECT COUNT(*) FROM devices;`).Scan(&deviceCount); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+	}
+	respondOK(w, &getDeviceCountResponse{DeviceCount: deviceCount})
+}
+
+//////////////////////////////////////////////////////////////////////
 // query for all the devices
 
 func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err error) {
@@ -542,7 +597,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 		respondError(w, httpStatus, err.Error())
 	}
 
-	sendResponse(w, http.StatusOK, &response)
+	respondOK(w, &response)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -563,7 +618,7 @@ func getDevices(w http.ResponseWriter, r *http.Request, params httprouter.Params
 	if err != nil {
 		respondError(w, status, err.Error())
 	}
-	sendResponse(w, http.StatusOK, &response)
+	respondOK(w, &response)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -729,7 +784,7 @@ func putReading_v1(w http.ResponseWriter, r *http.Request, params httprouter.Par
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCount}})
+	respondOK(w, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCount}})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -752,7 +807,7 @@ func putReading_v2(w http.ResponseWriter, r *http.Request, params httprouter.Par
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sendResponse(w, http.StatusOK, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCountSeconds}})
+	respondOK(w, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCountSeconds}})
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -890,7 +945,9 @@ func checkSaltLevels() {
 
 				emailData := emailWarnings{
 					Subject:  "Alert from the Water Softener",
-					Header:   "Warning! The Salt Sensor says...",
+					Header:   "Warning!",
+					From:     device.Name,
+					FromLink: fmt.Sprintf("https://vibue.com/d/d8cfdc5e-d585-4988-9547-293aae64c29b/salt-sensor?orgId=1&var-sensor=%s", device.Address),
 					Warnings: warnings,
 					Footer:   "This email is from the Salt Sensor Server",
 				}
@@ -965,18 +1022,18 @@ func main() {
 
 	// database config
 
-	log.Verbose.Printf("Database is '%s'", databaseName)
-	log.Verbose.Printf("Username is '%s'", credentials.Username)
+	log.Verbose.Printf("Database is '%s'", credentials.DBDatabase)
+	log.Verbose.Printf("Username is '%s'", credentials.DBUsername)
 
 	log.Verbose.Printf("SMTP Server is '%s'", credentials.SMTPServer)
 	log.Verbose.Printf("SMTP Account is '%s'", credentials.SMTPAccount)
 
 	dbDSNString = (&mysql.Config{
-		User:                 credentials.Username,
-		Passwd:               credentials.Password,
+		User:                 credentials.DBUsername,
+		Passwd:               credentials.DBPassword,
 		Net:                  "tcp",
 		Addr:                 "localhost:3306",
-		DBName:               databaseName,
+		DBName:               credentials.DBDatabase,
 		AllowNativePasswords: true,
 		ParseTime:            true,
 	}).FormatDSN()
@@ -997,6 +1054,8 @@ func main() {
 	httpRouter.PUT("/reading2", logged(putReading_v2))
 	httpRouter.GET("/readings", logged(getReadings))
 	httpRouter.GET("/devices", logged(getDevices))
+	httpRouter.GET("/numdevices", logged(getDeviceCount))
+	httpRouter.GET("/checksaltlevels", logged(doWarningEmail))
 
 	log.Verbose.Printf("HTTP server starting")
 
