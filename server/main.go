@@ -50,9 +50,14 @@ type readingParams struct {
 // Device identifier
 
 type device struct {
-	Id      int    `json:"id"`      // device Id
-	Address string `json:"address"` // mac address
-	Name    string `json:"name"`    // user defined name
+	Id         int    `json:"id"`          // device Id
+	Address    string `json:"address"`     // mac address
+	Name       string `json:"name"`        // user defined name
+	SensorName string `json:"sensor_type"` // type of sensor (V1, V2 etc)
+	MinDist    uint16 `json:"min_dist"`    // min distance for this sensor type
+	MaxDist    uint16 `json:"max_dist"`    // max distance for this sensor type
+	MinVbat    uint16 `json:"min_vbat"`    // min vbat for this sensor type
+	MaxVbat    uint16 `json:"max_vbat"`    // max vbat for this sensor type
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -144,21 +149,18 @@ var dbDSNString string
 
 //////////////////////////////////////////////////////////////////////
 
-func saltDistanceToPercent(distance uint16) uint16 {
+func (device device) saltDistanceToPercent(distance uint16) uint16 {
 
-	const min_dist = 60
-	const max_dist = 360
+	max_range := device.MaxDist - device.MinDist
 
-	max_range := max_dist - min_dist
-
-	if distance < min_dist {
-		distance = min_dist
+	if distance < device.MinDist {
+		distance = device.MinDist
 	}
 
-	if distance > max_dist {
-		distance = max_dist
+	if distance > device.MaxDist {
+		distance = device.MaxDist
 	}
-	return uint16((max_dist - int(distance)) * 100 / max_range)
+	return uint16((device.MaxDist - distance) * 100 / max_range)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -502,7 +504,18 @@ func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err erro
 
 	var query *sql.Rows
 
-	if query, err = db.Query(`SELECT device_id, device_address, IFNULL(device_name, '-') FROM devices`); err != nil {
+	if query, err = db.Query(`SELECT
+									device_id,
+									device_address,
+									IFNULL(device_name, '-'),
+									sensor_min_distance,
+									sensor_max_distance,
+									sensor_min_vbat,
+									sensor_max_vbat,
+									sensor_name
+								FROM devices
+								INNER JOIN sensors ON sensor_id = device_sensor_id;`); err != nil {
+
 		return getDevicesResponse{}, http.StatusInternalServerError, err
 	}
 
@@ -513,14 +526,20 @@ func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err erro
 	rows := 0
 
 	for query.Next() {
-		var id int
-		var addr string
-		var name string
-		if err = query.Scan(&id, &addr, &name); err != nil {
+		var device device
+		if err = query.Scan(&device.Id,
+			&device.Address,
+			&device.Name,
+			&device.MinDist,
+			&device.MaxDist,
+			&device.MinVbat,
+			&device.MaxVbat,
+			&device.SensorName); err != nil {
+
 			return getDevicesResponse{}, http.StatusInternalServerError, err
 		}
 		rows += 1
-		response.Device = append(response.Device, device{Id: id, Address: addr, Name: name})
+		response.Device = append(response.Device, device)
 	}
 	log.Debug.Printf("Fetched %d rows", rows)
 	response.Rows = rows
@@ -910,7 +929,7 @@ func checkSaltLevels() {
 
 				// warn about salt level if required
 
-				saltPercent := saltDistanceToPercent(reading.Distance[0])
+				saltPercent := device.saltDistanceToPercent(reading.Distance[0])
 
 				if saltPercent < uint16(distance_threshold) {
 					warnings = append(warnings, fmt.Sprintf("Salt level is %d%%", saltPercent))

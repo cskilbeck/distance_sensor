@@ -22,10 +22,22 @@ CREATE TABLE notifications (
         notification_time_warning_threshold INT NOT NULL DEFAULT 24,
         PRIMARY KEY(notification_id));
 
+-- sensors
+
+CREATE TABLE sensors (
+        sensor_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        sensor_name VARCHAR(64) NOT NULL,
+        sensor_min_vbat SMALLINT NOT NULL,
+        sensor_max_vbat SMALLINT NOT NULL,
+        sensor_min_distance SMALLINT NOT NULL,
+        sensor_max_distance SMALLINT NOT NULL,
+        PRIMARY KEY(sensor_id));
+
 -- devices
 
 CREATE TABLE devices (
         device_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        sensor_id INT UNSIGNED NOT NULL,
         device_address VARCHAR(12) UNIQUE NOT NULL,
         device_name VARCHAR(64) UNIQUE,
         sleep_count SMALLINT DEFAULT 21600,
