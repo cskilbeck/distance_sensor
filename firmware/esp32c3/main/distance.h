@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vl53l5cx_api.h"
+
 //////////////////////////////////////////////////////////////////////
 
 #define DISTANCE_SUCCESS 0
@@ -18,4 +20,4 @@
 
 //////////////////////////////////////////////////////////////////////
 
-int get_distance(int16_t *distance);
+int get_distance(int16_t *distance, VL53L5CX_ResultsData **results);

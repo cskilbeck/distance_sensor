@@ -26,11 +26,13 @@ CREATE TABLE notifications (
 
 CREATE TABLE sensors (
         sensor_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-        sensor_name VARCHAR(64) NOT NULL,
+        sensor_type VARCHAR(64) NOT NULL,
         sensor_min_vbat SMALLINT NOT NULL,
         sensor_max_vbat SMALLINT NOT NULL,
         sensor_min_distance SMALLINT NOT NULL,
         sensor_max_distance SMALLINT NOT NULL,
+        sensor_max_sigma SMALLINT NOT NULL DEFAULT 10,
+        sensor_min_reflectance TINYINT NOT NULL DEFAULT 20,
         PRIMARY KEY(sensor_id));
 
 -- devices

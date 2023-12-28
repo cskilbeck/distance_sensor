@@ -29,13 +29,12 @@ LOG_CONTEXT("distance");
 namespace
 {
     VL53L5CX_Configuration vl53;
-
     VL53L5CX_ResultsData vl53_results;
 }
 
 //////////////////////////////////////////////////////////////////////
 
-int get_distance(int16_t *distance)
+int get_distance(int16_t *distance, VL53L5CX_ResultsData **results)
 {
     i2c_config_t conf;
     memset(&conf, 0, sizeof(conf));
@@ -131,6 +130,8 @@ int get_distance(int16_t *distance)
             int16_t dist = static_cast<int16_t>((total - (imin + imax)) / 2);
 
             LOG_VERBOSE("% 4d % 4d % 4d % 4d", dist4[0], dist4[1], dist4[2], dist4[3]);
+
+            *results = &vl53_results;
 
             // if we got a reading in some sensible range, return it
 

@@ -50,8 +50,8 @@ namespace
     {
         // global logging level should be NONE if no serial attached
 
-        constexpr esp_log_level_t global_log_level = ESP_LOG_INFO;
-        // constexpr esp_log_level_t global_log_level = ESP_LOG_NONE;
+        // constexpr esp_log_level_t global_log_level = ESP_LOG_INFO;
+        constexpr esp_log_level_t global_log_level = ESP_LOG_NONE;
 
         // allow factory reset on long button press
 
@@ -60,6 +60,7 @@ namespace
         // wait this long for wifi to connect
 
         constexpr int wifi_timeout_ms = 30000;
+        // constexpr int wifi_timeout_ms = 300000;
 
         // led flash time when waiting for wifi
 
@@ -72,6 +73,7 @@ namespace
         // hold button for this long to factory reset
 
         constexpr int factory_reset_button_time_ms = 5000;
+        // constexpr int factory_reset_button_time_ms = 50000;
 
         // flash led for this long when button held
 
@@ -84,9 +86,9 @@ namespace
         // send readings to this server/port/path
 
         // constexpr char const *server_host = "192.168.4.52";
-        char const *server_host = "vibue.com";
+        constexpr char const *server_host = "vibue.com";
         constexpr char const *server_port = "5002";
-        constexpr char const *server_path = "reading2";
+        constexpr char const *server_path = "reading3";
 
         // retry http this many times (sometimes needs two, never seen it succeed after that)
 
@@ -305,7 +307,7 @@ namespace
     //////////////////////////////////////////////////////////////////////
     // send a reading to the server and process the response
 
-    esp_err_t send_reading(int16 distance_mm, int vbat_mv, int8 wifi_rssi, int32 *server_sleep_seconds)
+    esp_err_t send_reading(int16 distance_mm, int vbat_mv, int8 wifi_rssi, int32 *server_sleep_seconds, VL53L5CX_ResultsData *results)
     {
         // default mac address is used as unique device id
 
@@ -319,24 +321,56 @@ namespace
 
         for(int tries = 0; tries < config::http_retries; ++tries) {
 
-            char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d";
+            size_t sigma_size = sizeof(uint16) * countof(results->range_sigma_mm);
+            size_t distance_size = sizeof(int16) * countof(results->distance_mm);
+            size_t reflectance_size = sizeof(uint8) * countof(results->reflectance);
 
-            static char url[256];
-            sprintf(url, url_format, config::server_host, config::server_port, config::server_path, vbat_mv, distance_mm, 0, mac_address, wifi_rssi);
+            size_t const post_size = sigma_size + distance_size + reflectance_size;
 
-            static char response_buffer[256];
+            byte *post_buffer = reinterpret_cast<byte *>(malloc(post_size));
 
-            static size_t response_size = sizeof(response_buffer);
+            if(post_buffer == null) {
 
-            int response_code;
+                LOG_ERROR("Can't alloc %d bytes for post buffer1?", post_size);
 
-            if(http_request(HTTP_METHOD_PUT, url, &response_code, response_buffer, &response_size) == ESP_OK) {
+                // TODO (chs): upload something?
 
-                if(response_code < 300) {
+                break;
 
-                    return read_settings(response_buffer, server_sleep_seconds);
+            } else {
+
+                DEFER(free(post_buffer));
+
+                byte *dst = post_buffer;
+
+                memcpy(dst, results->range_sigma_mm, sigma_size);
+                dst += sigma_size;
+
+                memcpy(dst, results->distance_mm, distance_size);
+                dst += distance_size;
+
+                memcpy(dst, results->reflectance, reflectance_size);
+
+                char const *url_format = "http://%s:%s/%s?vbat=%d&distance=%d&flags=%d&device=%s&rssi=%d&body_length=%d&sensor_type=V2";
+
+                static char url[256];
+                sprintf(
+                    url, url_format, config::server_host, config::server_port, config::server_path, vbat_mv, distance_mm, 0, mac_address, wifi_rssi, post_size);
+
+                static char response_buffer[256];
+
+                static size_t response_size = sizeof(response_buffer);
+
+                int response_code;
+
+                if(http_request(HTTP_METHOD_POST, url, &response_code, response_buffer, &response_size, post_buffer, post_size) == ESP_OK) {
+
+                    if(response_code < 300) {
+
+                        return read_settings(response_buffer, server_sleep_seconds);
+                    }
+                    return ESP_OK;
                 }
-                return ESP_OK;
             }
             sleep(100);
         }
@@ -354,7 +388,7 @@ extern "C" void app_main(void)
     REG_CLR_BIT(RTC_CNTL_FIB_SEL_REG, RTC_CNTL_FIB_BOD_RST);
     REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ANA_RST_EN);
 
-    esp_log_level_set("*", global_log_level);
+    esp_log_level_set("*", config::global_log_level);
 
     LOG_ERROR("===== MAIN =====");
 
@@ -418,11 +452,37 @@ extern "C" void app_main(void)
 
     int16 distance = 0;
 
-    int distance_status = get_distance(&distance);
+    VL53L5CX_ResultsData *results;
+
+    int distance_status = get_distance(&distance, &results);
 
     if(distance_status == DISTANCE_SUCCESS) {
 
-        LOG_INFO("DISTANCE: %d", distance);
+        {
+            int16 *d = results->distance_mm;
+            LOG_INFO("DISTANCE:");
+            for(int y = 0; y < 8; ++y) {
+                LOG_INFO("% 5d % 5d % 5d % 5d % 5d % 5d % 5d % 5d", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+                d += 8;
+            }
+        }
+        {
+            uint16 *d = results->range_sigma_mm;
+            LOG_INFO("SIGMA:");
+            for(int y = 0; y < 8; ++y) {
+                LOG_INFO("% 5d % 5d % 5d % 5d % 5d % 5d % 5d % 5d", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+                d += 8;
+            }
+        }
+
+        {
+            uint8 *d = results->reflectance;
+            LOG_INFO("REFLECTANCE:");
+            for(int y = 0; y < 8; ++y) {
+                LOG_INFO("% 5d % 5d % 5d % 5d % 5d % 5d % 5d % 5d", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+                d += 8;
+            }
+        }
 
     } else {
 
@@ -452,7 +512,7 @@ extern "C" void app_main(void)
 
             int32 server_sleep_seconds = config::default_sleep_seconds;
 
-            ESP_LOG(send_reading(distance, vbat_mv, wifi_get_rssi(), &server_sleep_seconds));
+            ESP_LOG(send_reading(distance, vbat_mv, wifi_get_rssi(), &server_sleep_seconds, results));
 
             // if we got a new value for sleep_seconds, update it in NVS
 

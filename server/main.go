@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -50,14 +51,16 @@ type readingParams struct {
 // Device identifier
 
 type device struct {
-	Id         int    `json:"id"`          // device Id
-	Address    string `json:"address"`     // mac address
-	Name       string `json:"name"`        // user defined name
-	SensorName string `json:"sensor_type"` // type of sensor (V1, V2 etc)
-	MinDist    uint16 `json:"min_dist"`    // min distance for this sensor type
-	MaxDist    uint16 `json:"max_dist"`    // max distance for this sensor type
-	MinVbat    uint16 `json:"min_vbat"`    // min vbat for this sensor type
-	MaxVbat    uint16 `json:"max_vbat"`    // max vbat for this sensor type
+	Id             int    `json:"id"`              // device Id
+	Address        string `json:"address"`         // mac address
+	Name           string `json:"name"`            // user defined name
+	SensorType     string `json:"sensor_type"`     // type of sensor (V1, V2 etc)
+	MinDist        uint16 `json:"min_dist"`        // min distance for this sensor type
+	MaxDist        uint16 `json:"max_dist"`        // max distance for this sensor type
+	MinVbat        uint16 `json:"min_vbat"`        // min vbat for this sensor type
+	MaxVbat        uint16 `json:"max_vbat"`        // max vbat for this sensor type
+	MaxSigma       uint16 `json:"max_sigma"`       // max sigma_mm for this sensor type
+	MinReflectance uint8  `json:"min_reflectance"` // min reflectance for this sensor type
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -85,11 +88,13 @@ type okResponse struct {
 // HTTPS GET /readings response
 
 type getReadingsResponse struct {
-	Rows     int      `json:"rows"`     // # of results
-	Time     []int64  `json:"time"`     // seconds since unix epoch
-	Vbat     []uint16 `json:"vbat"`     // mV * 10
-	Distance []uint16 `json:"distance"` // millimetres
-	Rssi     []int8   `json:"rssi"`     // dBm
+	Rows        int      `json:"rows"`        // # of results
+	Time        []int64  `json:"time"`        // seconds since unix epoch
+	Vbat        []uint16 `json:"vbat"`        // mV * 10
+	Distance    []uint16 `json:"distance"`    // millimetres
+	Rssi        []int8   `json:"rssi"`        // dBm
+	Sigma       []uint16 `json:"sigma"`       // sigma mm (confidence, looks like)
+	Reflectance []uint8  `json:"reflectance"` // reflectance (units? no clue)
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -496,6 +501,45 @@ func getDeviceCount(w http.ResponseWriter, r *http.Request, params httprouter.Pa
 }
 
 //////////////////////////////////////////////////////////////////////
+
+func getDevice(db *sql.DB, deviceAddress string) (device, error) {
+
+	row := db.QueryRow(`SELECT
+							device_id,
+							device_address,
+							IFNULL(device_name, '-'),
+							sensors.sensor_type,
+							sensors.sensor_min_distance,
+							sensors.sensor_max_distance,
+							sensors.sensor_min_vbat,
+							sensors.sensor_max_vbat,
+							sensors.sensor_max_sigma,
+							sensors.sensor_min_reflectance
+						FROM devices
+						INNER JOIN sensors
+							ON devices.sensor_id = sensors.sensor_id
+						WHERE device_address = ?`, deviceAddress)
+
+	var d device
+
+	if err := row.Scan(&d.Id,
+		&d.Address,
+		&d.Name,
+		&d.SensorType,
+		&d.MinDist,
+		&d.MaxDist,
+		&d.MinVbat,
+		&d.MaxVbat,
+		&d.MaxSigma,
+		&d.MinReflectance); err != nil {
+
+		return device{}, err
+	}
+
+	return d, nil
+}
+
+//////////////////////////////////////////////////////////////////////
 // query for all the devices
 
 func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err error) {
@@ -508,13 +552,14 @@ func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err erro
 									device_id,
 									device_address,
 									IFNULL(device_name, '-'),
-									sensor_min_distance,
-									sensor_max_distance,
-									sensor_min_vbat,
-									sensor_max_vbat,
-									sensor_name
+									sensors.sensor_type,
+									sensors.sensor_min_distance,
+									sensors.sensor_max_distance,
+									sensors.sensor_min_vbat,
+									sensors.sensor_max_vbat
 								FROM devices
-								INNER JOIN sensors ON sensor_id = device_sensor_id;`); err != nil {
+								INNER JOIN sensors
+								ON devices.sensor_id = sensors.sensor_id;`); err != nil {
 
 		return getDevicesResponse{}, http.StatusInternalServerError, err
 	}
@@ -530,11 +575,11 @@ func queryDevices(db *sql.DB) (response getDevicesResponse, status int, err erro
 		if err = query.Scan(&device.Id,
 			&device.Address,
 			&device.Name,
+			&device.SensorType,
 			&device.MinDist,
 			&device.MaxDist,
 			&device.MinVbat,
-			&device.MaxVbat,
-			&device.SensorName); err != nil {
+			&device.MaxVbat); err != nil {
 
 			return getDevicesResponse{}, http.StatusInternalServerError, err
 		}
@@ -561,7 +606,7 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 
 	// parse the query string
 
-	var errors = make([]string, 0)
+	var errs = make([]string, 0)
 
 	queryParams := r.URL.Query()
 
@@ -578,33 +623,33 @@ func getReadings(w http.ResponseWriter, r *http.Request, params httprouter.Param
 	// scan the parameters
 
 	if deviceAddress48, err = parseQueryParamUnsigned("device", 16, 48, queryParams); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
 	if len(queryParams["from"]) != 0 {
 		if from, err = parseQueryParamTime("from", queryParams); err != nil {
-			errors = append(errors, err.Error())
+			errs = append(errs, err.Error())
 		}
 	}
 
 	if len(queryParams["to"]) != 0 {
 		if to, err = parseQueryParamTime("to", queryParams); err != nil {
-			errors = append(errors, err.Error())
+			errs = append(errs, err.Error())
 		}
 	}
 
 	if len(queryParams["count"]) != 0 {
 		if count, err = parseQueryParamUnsigned("count", 10, 16, queryParams); err != nil {
-			errors = append(errors, err.Error())
+			errs = append(errs, err.Error())
 		} else if count > 10000 {
-			errors = append(errors, fmt.Sprintf("count %d out of range, must be < 10000", count))
+			errs = append(errs, fmt.Sprintf("count %d out of range, must be < 10000", count))
 		}
 	}
 
 	// send error(s) if anything wrong
 
-	if len(errors) != 0 {
-		respondError(w, http.StatusBadRequest, errors...)
+	if len(errs) != 0 {
+		respondError(w, http.StatusBadRequest, errs...)
 		return
 	}
 
@@ -707,6 +752,111 @@ func insertReading(device uint64, vbat uint64, distance_mm int32, flags uint64, 
 }
 
 //////////////////////////////////////////////////////////////////////
+// add a reading to the database, this time taking into account the sensor_type
+
+func insertReading_ext(device uint64, sensor_type string, vbat uint64, distance_mm int32, sigma uint16, reflectance uint8, flags uint64, rssi int64) (sleepCount int, err error) {
+
+	log.Verbose.Printf("ext: vbat: %d, sensor_type: %s, distance: %d, flags: %d, device: %012x, rssi: %d", vbat, sensor_type, distance_mm, flags, device, rssi)
+
+	var db *sql.DB
+
+	if db, err = openDatabase(); err != nil {
+		return 0, fmt.Errorf("error opening database: %s", err.Error())
+	}
+	defer db.Close()
+
+	// find sensor_type in sensors
+
+	// get device id or insert new device
+
+	deviceAddress := fmt.Sprintf("%012x", device)
+
+	log.Debug.Printf("Get device id for %s", deviceAddress)
+
+	var deviceAddress48 int64
+	var insert sql.Result
+	var device_sensor_type string
+
+	log.Debug.Printf("A")
+
+	if err = db.QueryRow(`SELECT
+							device_id, sleep_count, sensors.sensor_type
+							FROM devices
+							INNER JOIN
+								sensors ON
+									devices.sensor_id = sensors.sensor_id
+							WHERE device_address = ?;`, deviceAddress).Scan(&deviceAddress48, &sleepCount, &device_sensor_type); err != nil {
+
+		if err == sql.ErrNoRows {
+
+			log.Info.Printf("New device: %s", deviceAddress)
+
+			var sensor_id uint64
+
+			if err = db.QueryRow(`SELECT sensor_id from sensors WHERE sensor_type=?;`, sensor_type).Scan(&sensor_id); err != nil {
+
+				return 0, fmt.Errorf("sensor_type '%s' not found: %s", sensor_type, err.Error())
+			}
+
+			if insert, err = db.Exec(`INSERT INTO
+										devices(sensor_id, device_address)
+										VALUES (?, ?)`, sensor_id, deviceAddress); err == nil {
+
+				deviceAddress48, err = insert.LastInsertId()
+				device_sensor_type = sensor_type
+				sleepCount = 21600
+			}
+		}
+	}
+
+	log.Debug.Printf("B")
+
+	if err != nil {
+		return 0, fmt.Errorf("database error adding device %s: %s", deviceAddress, err.Error())
+	}
+
+	if strings.Compare(device_sensor_type, sensor_type) != 0 {
+		return 0, fmt.Errorf("wrong device type (should be %s, got %s)", device_sensor_type, sensor_type)
+	}
+
+	log.Debug.Printf("Device ID %d", deviceAddress48)
+
+	// add the reading
+
+	var readingId int64
+
+	if insert, err = db.Exec(`INSERT INTO readings
+								(device_id,
+								reading_vbat,
+								reading_distance,
+								reading_sigma,
+								reading_reflectance,
+								reading_flags,
+								reading_rssi,
+								reading_timestamp)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP());`,
+		deviceAddress48,
+		vbat,
+		distance_mm,
+		sigma,
+		reflectance,
+		flags,
+		rssi); err == nil {
+
+		readingId, err = insert.LastInsertId()
+	}
+
+	if err != nil {
+		log.Error.Printf("Huh? %s", err.Error())
+		return 0, fmt.Errorf("database error adding reading: %s", err.Error())
+	}
+
+	log.Debug.Printf("Reading ID %d", readingId)
+
+	return sleepCount, nil
+}
+
+//////////////////////////////////////////////////////////////////////
 // common reading parameters:
 // vbat uint64			vbat in 100mV units (i.e. 843 = 8.43 volts)
 // distance uint64		distance in counter units (see resolution)
@@ -720,30 +870,30 @@ func getReadingParams(r *http.Request, params httprouter.Params) (readingParams,
 
 	var p readingParams
 
-	var errors = make([]string, 0)
+	var errs = make([]string, 0)
 
 	query := r.URL.Query()
 
 	if p.vbat, err = parseQueryParamUnsigned("vbat", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
 	if p.distance, err = parseQueryParamUnsigned("distance", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
 	if p.device, err = parseQueryParamUnsigned("device", 16, 48, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
 	if p.flags, err = parseQueryParamUnsigned("flags", 10, 16, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
 	if p.rssi, err = parseQueryParamSigned("rssi", 10, 8, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
-	return p, errors
+	return p, errs
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -773,18 +923,18 @@ func putReading_v1(w http.ResponseWriter, r *http.Request, params httprouter.Par
 
 	// parse the query string
 
-	queryParams, errors := getReadingParams(r, params)
+	queryParams, errs := getReadingParams(r, params)
 
 	var resolution int64 = 0
 
 	query := r.URL.Query()
 
 	if resolution, err = parseQueryParamSigned("resolution", 10, 32, query); err != nil {
-		errors = append(errors, err.Error())
+		errs = append(errs, err.Error())
 	}
 
-	if len(errors) != 0 {
-		respondError(w, http.StatusBadRequest, errors...)
+	if len(errs) != 0 {
+		respondError(w, http.StatusBadRequest, errs...)
 		return
 	}
 
@@ -813,14 +963,162 @@ func putReading_v1(w http.ResponseWriter, r *http.Request, params httprouter.Par
 
 func putReading_v2(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 
-	queryParams, errors := getReadingParams(r, params)
+	queryParams, errs := getReadingParams(r, params)
 
-	if len(errors) != 0 {
-		respondError(w, http.StatusBadRequest, errors...)
+	if len(errs) != 0 {
+		respondError(w, http.StatusBadRequest, errs...)
 		return
 	}
 
 	sleepCountSeconds, err := insertReading(queryParams.device, (queryParams.vbat+5)/10, int32(queryParams.distance), queryParams.flags, queryParams.rssi)
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondOK(w, &putReadingResponse{Settings: sensorSettings{SleepCount: sleepCountSeconds}})
+}
+
+//////////////////////////////////////////////////////////////////////
+// post a new reading v3 for distance_sensor_v2
+// post data is binary 8x8 distance and 8x8 sigma
+
+func postReading_v3(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+
+	queryParams, errs := getReadingParams(r, params)
+
+	var err error
+	var body_length int64
+
+	if body_length, err = parseQueryParamSigned("body_length", 10, 32, r.URL.Query()); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if !r.URL.Query().Has("sensor_type") {
+		errs = append(errs, "missing query parameter: sensor_type")
+	}
+
+	// check body_length is sane here, say, less than, oh, I dunno, 2KB
+	if body_length <= 0 || body_length > 2047 {
+		errs = append(errs, fmt.Sprintf("body length %d is out of range (1..2048)", body_length))
+	}
+
+	if len(errs) != 0 {
+		respondError(w, http.StatusBadRequest, errs...)
+		return
+	}
+
+	sensor_type := r.URL.Query().Get("sensor_type")
+
+	// what's in it?
+
+	// 64 x uint16 of sigma_mm (seems to be some confidence thing?)
+	// 64 x int16 of distance (mm)
+	// 64 x uint8 of reflectance (some unit)
+
+	// so body_length should be 2 * 64 + 2 * 64 + 1 * 64 = 320
+
+	good_body_length := 2*64 + 2*64 + 1*64
+
+	var body []byte
+
+	if body, err = io.ReadAll(r.Body); err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Body length should be %d", good_body_length))
+	}
+
+	if len(body) != int(body_length) {
+		respondError(w, http.StatusBadRequest)
+	}
+
+	log.Debug.Printf("BODY[0] = %d", body[0])
+
+	// A valid reading has reflectance > ?? and sigma < ??, find the furthest valid reading
+
+	// if no valid entries found, it's empty, put in a [max_distance?] reading and set the `error_reading_distance` flag (1<<4)
+
+	// get these from the database
+
+	var db *sql.DB
+
+	if db, err = openDatabase(); err != nil {
+
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("error opening database: %s", err.Error()))
+	}
+	defer db.Close()
+
+	deviceAddress := fmt.Sprintf("%012x", queryParams.device)
+
+	var dev device
+
+	dev, err = getDevice(db, deviceAddress)
+
+	if err != nil && err != sql.ErrNoRows {
+
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("error getting device %s: %s", deviceAddress, err.Error()))
+	}
+
+	// offsets into the post body of the different arrays
+	sigma_idx := 0
+	distance_idx := 128    // 64 * sizeof(uint16)
+	reflectance_idx := 256 // (64 + 64) * sizeof(uint16)
+
+	var nearest uint16 = dev.MaxDist
+	var best_sigma uint16
+	var best_reflectance uint8
+
+	// 8x8 resolution = 64 entries to check
+
+	var sigma_log string
+	var distance_log string
+	var reflectance_log string
+
+	var sep string = ""
+
+	log.Debug.Print("SIGMA  :  DISTANCE  :  REFLECTANCE")
+
+	for i := 0; i < 64; i++ {
+
+		sigma_mm := uint16(body[sigma_idx]) | (uint16(body[sigma_idx+1]) << 8)
+
+		distance_mm := uint16(body[distance_idx]) | (uint16(body[distance_idx+1]) << 8)
+
+		reflectance := body[reflectance_idx]
+
+		if sigma_mm < dev.MaxSigma && reflectance > dev.MinReflectance && distance_mm < nearest {
+			nearest = distance_mm
+			best_sigma = sigma_mm
+			best_reflectance = reflectance
+		}
+
+		sigma_log = fmt.Sprintf("%s%s% 5d", sigma_log, sep, sigma_mm)
+		distance_log = fmt.Sprintf("%s%s% 5d", distance_log, sep, distance_mm)
+		reflectance_log = fmt.Sprintf("%s%s% 4d", reflectance_log, sep, reflectance)
+
+		sep = " "
+
+		if (i & 7) == 7 {
+
+			log.Debug.Printf("%s  :  %s  :  %s", sigma_log, distance_log, reflectance_log)
+			sigma_log = ""
+			distance_log = ""
+			reflectance_log = ""
+			sep = ""
+		}
+
+		sigma_idx += 2       // sizeof(uint16)
+		distance_idx += 2    // sizeof(uint16)
+		reflectance_idx += 1 // sizeof(uint8)
+	}
+
+	flags := queryParams.flags
+
+	if nearest < dev.MinDist || nearest >= dev.MaxDist {
+
+		nearest = dev.MaxDist
+		flags = flags | (1 << 4) // error_reading_distance
+	}
+
+	sleepCountSeconds, err := insertReading_ext(queryParams.device, sensor_type, (queryParams.vbat+5)/10, int32(nearest), best_sigma, best_reflectance, flags, queryParams.rssi)
 
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -978,16 +1276,6 @@ func checkSaltLevels() {
 
 //////////////////////////////////////////////////////////////////////
 
-func makeRouter() *httprouter.Router {
-
-	router := httprouter.New()
-	router.NotFound = http.HandlerFunc(notFound)
-	router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
-	return router
-}
-
-//////////////////////////////////////////////////////////////////////
-
 func main() {
 
 	// command line parameters
@@ -1067,18 +1355,24 @@ func main() {
 		log.Error.Printf("Error setting up daily alarm: %s", err.Error())
 	}
 
-	httpRouter := makeRouter()
+	router := httprouter.New()
 
-	httpRouter.PUT("/reading", logged(putReading_v1))
-	httpRouter.PUT("/reading2", logged(putReading_v2))
-	httpRouter.GET("/readings", logged(getReadings))
-	httpRouter.GET("/devices", logged(getDevices))
-	httpRouter.GET("/numdevices", logged(getDeviceCount))
-	httpRouter.GET("/checksaltlevels", logged(doWarningEmail))
+	router.NotFound = http.HandlerFunc(notFound)
+	router.MethodNotAllowed = http.HandlerFunc(methodNotAllowed)
+
+	router.PUT("/reading", logged(putReading_v1))
+	router.PUT("/reading2", logged(putReading_v2))
+
+	router.GET("/readings", logged(getReadings))
+	router.GET("/devices", logged(getDevices))
+	router.GET("/numdevices", logged(getDeviceCount))
+	router.GET("/checksaltlevels", logged(doWarningEmail))
+
+	router.POST("/reading3", logged(postReading_v3))
 
 	log.Verbose.Printf("HTTP server starting")
 
-	err = http.ListenAndServe(":5002", httpRouter)
+	err = http.ListenAndServe(":5002", router)
 
 	if errors.Is(err, http.ErrServerClosed) {
 		log.Verbose.Printf("HTTP server closed")

@@ -90,7 +90,8 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-esp_err_t http_request(esp_http_client_method_t method, char const *url, int *response_code, char *response_buffer, size_t *response_buffer_size)
+esp_err_t http_request(esp_http_client_method_t method, char const *url, int *response_code, char *response_buffer, size_t *response_buffer_size,
+                       void const *post_data, size_t post_size)
 {
     LOG_CONTEXT("http_request");
 
@@ -113,6 +114,10 @@ esp_err_t http_request(esp_http_client_method_t method, char const *url, int *re
     }
 
     DEFER(esp_http_client_cleanup(client));
+
+    if(post_data != null && post_size != 0) {
+        esp_http_client_set_post_field(client, reinterpret_cast<char const *>(post_data), static_cast<int>(post_size));
+    }
 
     ESP_RET(esp_http_client_perform(client));
 
